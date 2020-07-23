@@ -1069,7 +1069,7 @@ public class SystemTestData extends CiteTestData {
 
     @Override
     public void tearDown() throws Exception {
-        int MAX_ATTEMPTS = 100;
+        int MAX_ATTEMPTS = 10;
         for (int i = 1; i <= MAX_ATTEMPTS; i++) {
             try {
                 deleteFilesOnExit(data);
