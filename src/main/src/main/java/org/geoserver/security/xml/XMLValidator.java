@@ -69,6 +69,9 @@ public class XMLValidator {
             throw new IOException(e);
         }
         Schema schema = versionMapRR.get(versionString);
+        if (schema == null) {
+            throw new IOException(String.format("Missing schema for version:%s", versionString));
+        }
         Validator val = schema.newValidator();
         try {
             val.validate(new DOMSource(doc));
@@ -102,18 +105,21 @@ public class XMLValidator {
         synchronized (lockRR) {
             if (versionMapRR != null) return; // another tread was faster
 
-            versionMapRR = new HashMap<String, Schema>();
+            HashMap<String, Schema> mapRR = new HashMap<String, Schema>();
             SchemaFactory factory =
                     SchemaFactory.newInstance(javax.xml.XMLConstants.W3C_XML_SCHEMA_NS_URI);
-
-            Schema schema = null;
             try {
-                schema =
-                        factory.newSchema(this.getClass().getResource(XMLConstants.FILE_RR_SCHEMA));
-            } catch (SAXException e) {
-                throw new IOException(e); // this should not happen
+                mapRR.put(XMLConstants.VERSION_RR_1_0, 
+                		factory.newSchema(this.getClass().getResource(XMLConstants.FILE_RR_SCHEMA)));
+            } catch (Exception ex) {
+                throw new IOException(
+                        String.format(
+                                "Decoding xml %s caused an exception by factory %s",
+                                XMLConstants.FILE_RR_SCHEMA, factory.getClass().getCanonicalName()),
+                        ex);
             }
-            versionMapRR.put(XMLConstants.VERSION_RR_1_0, schema);
+            
+            versionMapRR = mapRR;
         }
     }
 }
