@@ -109,8 +109,10 @@ public class XMLValidator {
             SchemaFactory factory =
                     SchemaFactory.newInstance(javax.xml.XMLConstants.W3C_XML_SCHEMA_NS_URI);
             try {
-                mapRR.put(XMLConstants.VERSION_RR_1_0, 
-                		factory.newSchema(this.getClass().getResource(XMLConstants.FILE_RR_SCHEMA)));
+                mapRR.put(
+                        XMLConstants.VERSION_RR_1_0,
+                        factory.newSchema(
+                                this.getClass().getResource(XMLConstants.FILE_RR_SCHEMA)));
             } catch (Exception ex) {
                 throw new IOException(
                         String.format(
@@ -118,7 +120,7 @@ public class XMLValidator {
                                 XMLConstants.FILE_RR_SCHEMA, factory.getClass().getCanonicalName()),
                         ex);
             }
-            
+
             versionMapRR = mapRR;
         }
     }
