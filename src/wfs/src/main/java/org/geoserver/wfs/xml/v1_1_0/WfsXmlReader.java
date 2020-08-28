@@ -8,6 +8,7 @@ package org.geoserver.wfs.xml.v1_1_0;
 import java.io.Reader;
 import java.util.Map;
 import javax.xml.namespace.QName;
+import net.opengis.wfs.GetFeatureType;
 import org.geoserver.config.GeoServer;
 import org.geoserver.ows.XmlRequestReader;
 import org.geoserver.util.EntityResolverProvider;
@@ -63,6 +64,11 @@ public class WfsXmlReader extends XmlRequestReader {
         Object parsed = WFSXmlUtils.parseRequest(parser, reader, wfs);
 
         WFSXmlUtils.checkValidationErrors(parser, this);
+
+        if (request instanceof GetFeatureType && parsed instanceof GetFeatureType) {
+            ((GetFeatureType) parsed)
+                    .setFormatOptions(((GetFeatureType) request).getFormatOptions());
+        }
 
         return parsed;
     }
