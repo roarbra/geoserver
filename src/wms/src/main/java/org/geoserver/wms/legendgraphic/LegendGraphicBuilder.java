@@ -87,6 +87,7 @@ public abstract class LegendGraphicBuilder {
     List<LegendRequest> layers;
     boolean hasVectorTransformation = false;
     boolean hasRasterTransformation = false;
+    boolean rescaleSymbols = true;
     /** */
     public LegendGraphicBuilder() {
         super();
@@ -110,6 +111,13 @@ public abstract class LegendGraphicBuilder {
             String forceTitlesOpt = (String) request.getLegendOptions().get("forceTitles");
             if (forceTitlesOpt.equalsIgnoreCase("off")) {
                 forceTitlesOff = true;
+            }
+        }
+
+        if (request.getLegendOptions().get("rescaleSymbols") instanceof String) {
+            String rescaleSymbolsOpt = (String) request.getLegendOptions().get("rescaleSymbols");
+            if (rescaleSymbolsOpt.equalsIgnoreCase("off")) {
+                rescaleSymbols = false;
             }
         }
 
