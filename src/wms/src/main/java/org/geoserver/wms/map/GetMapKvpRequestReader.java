@@ -1436,28 +1436,31 @@ public class GetMapKvpRequestReader extends KvpRequestReader implements Disposab
         List<Style> styles = new ArrayList<Style>();
         for (int i = 0; i < styleNames.size(); i++) {
             String styleName = styleNames.get(i);
-            if ("".equals(styleName)) {
-                // return null, this should flag request reader to use default for
-                // the associated layer
-                styles.add(null);
-            } else if (isRemoteWMSLayer(requestedLayerInfos.get(i))) {
-                // GEOS-9312
-                // if the style belongs to a remote layer check inside the remote layer capabilities
-                // instead of local WMS
-                WMSLayerInfo remoteWMSLayer =
-                        (WMSLayerInfo) ((LayerInfo) requestedLayerInfos.get(i)).getResource();
-                Optional<Style> remoteStyle = remoteWMSLayer.findRemoteStyleByName(styleName);
-                if (remoteStyle.isPresent()) styles.add(remoteStyle.get());
-                else
-                    throw new ServiceException(
-                            "No such remote style: " + styleName, "StyleNotDefined");
-            } else {
-                final Style style = wms.getStyleByName(styleName);
-                if (style == null) {
+
+            final Style style = wms.getStyleByName(styleName);
+            if (style == null) {
+                if ("".equals(styleName)) {
+                    // return null, this should flag request reader to use default for
+                    // the associated layer
+                    styles.add(null);
+                } else if (isRemoteWMSLayer(requestedLayerInfos.get(i))) {
+                    // GEOS-9312
+                    // if the style belongs to a remote layer check inside the remote layer
+                    // capabilities
+                    // instead of local WMS
+                    WMSLayerInfo remoteWMSLayer =
+                            (WMSLayerInfo) ((LayerInfo) requestedLayerInfos.get(i)).getResource();
+                    Optional<Style> remoteStyle = remoteWMSLayer.findRemoteStyleByName(styleName);
+                    if (remoteStyle.isPresent()) {
+                        styles.add(remoteStyle.get());
+                    } else {
+                        throw new ServiceException(
+                                "No such remote style: " + styleName, "StyleNotDefined");
+                    }
+                } else {
                     String msg = "No such style: " + styleName;
                     throw new ServiceException(msg, "StyleNotDefined");
                 }
-                styles.add(style);
             }
         }
         return styles;
