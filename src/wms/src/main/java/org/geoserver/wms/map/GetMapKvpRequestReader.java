@@ -804,6 +804,9 @@ public class GetMapKvpRequestReader extends KvpRequestReader implements Disposab
             return namedStyle;
         } else {
             StyleInfo defaultStyle = layer.getDefaultStyle();
+            if (defaultStyle == null) {
+                throw new IOException("No default style set for layer:" + layer.getName());
+            }
             return defaultStyle.getStyle();
         }
     }
