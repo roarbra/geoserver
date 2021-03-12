@@ -11,14 +11,13 @@ import java.awt.Graphics2D;
 import java.awt.Image;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
+import java.awt.image.IndexColorModel;
 import java.awt.image.RenderedImage;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.imageio.ImageIO;
@@ -49,6 +48,8 @@ import org.opengis.feature.Feature;
 import org.opengis.feature.type.FeatureType;
 import org.opengis.filter.expression.Expression;
 import org.opengis.filter.expression.Literal;
+import org.opengis.referencing.FactoryException;
+import org.opengis.referencing.operation.TransformException;
 import org.opengis.style.GraphicLegend;
 import org.springframework.util.StringUtils;
 
@@ -89,11 +90,6 @@ public class BufferedImageLegendGraphicBuilder extends LegendGraphicBuilder {
 
     /** used to create sample point shapes with LiteShape (not lines nor polygons) */
     private static final GeometryFactory geomFac = new GeometryFactory();
-
-    /**
-     * Just a holder to avoid creating many point shapes from inside <code>getSampleShape()</code>
-     */
-    private LiteShape2 samplePoint;
 
     /**
      * Default minimum size for symbols rendering. Can be overridden using LEGEND_OPTIONS
@@ -250,7 +246,8 @@ public class BufferedImageLegendGraphicBuilder extends LegendGraphicBuilder {
                 double actualMin = minMax[0];
                 double actualMax = minMax[1];
                 boolean rescalingRequired =
-                        actualMin < minimumSymbolSize || actualMax > defaultSize;
+                        rescaleSymbols
+                                && (actualMin < minimumSymbolSize || actualMax > defaultSize);
                 java.util.function.Function<Double, Double> rescaler = null;
                 if (actualMax == actualMin
                         || ((actualMin / actualMax) * defaultSize) > minimumSymbolSize) {
@@ -317,36 +314,81 @@ public class BufferedImageLegendGraphicBuilder extends LegendGraphicBuilder {
             boolean rescalingRequired,
             java.util.function.Function<Double, Double> rescaler) {
         MetaBufferEstimator estimator = new MetaBufferEstimator(sampleFeature);
+
         for (int i = 0; i < ruleCount; i++) {
-
-            final RenderedImage image = ImageUtils.createImage(w, h, null, transparent);
-            final Map<RenderingHints.Key, Object> hintsMap = new HashMap<>();
-            final Graphics2D graphics =
-                    ImageUtils.prepareTransparency(
-                            transparent, LegendUtils.getBackgroundColor(request), image, hintsMap);
-            graphics.setRenderingHint(
-                    RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-
-            Feature sample = getSampleFeatureForRule(layer, sampleFeature, applicableRules[i]);
-
-            final List<Symbolizer> symbolizers = applicableRules[i].symbolizers();
-            final GraphicLegend graphic = applicableRules[i].getLegend();
+            final Feature sample =
+                    getSampleFeatureForRule(layer, sampleFeature, applicableRules[i]);
+            final GraphicLegend legend = applicableRules[i].getLegend();
+            RenderedImage image = null;
 
             // If this rule has a legend graphic defined in the SLD, use it
-            if (graphic != null) {
-                if (this.samplePoint == null) {
-                    Coordinate coord = new Coordinate(w / 2, h / 2);
-
+            if (legend != null) {
+                final Style2D style2d = styleFactory.createGraphicLegend(legend);
+                int symbolSize = 0;
+                if (legend.getSize() != null && !Expression.NIL.equals(legend.getSize())) {
                     try {
-                        this.samplePoint =
-                                new LiteShape2(geomFac.createPoint(coord), null, null, false);
-                    } catch (Exception e) {
-                        this.samplePoint = null;
+                        final Integer siz = legend.getSize().evaluate(sample, Integer.class);
+                        symbolSize = siz.intValue();
+                    } catch (NumberFormatException nfe) {
                     }
                 }
-                shapePainter.paint(graphics, this.samplePoint, graphic, scaleDenominator, false);
 
+                LiteShape2 samplePoint = null;
+                try {
+                    if (symbolSize > 0) {
+                        image =
+                                ImageUtils.createImage(
+                                        symbolSize,
+                                        symbolSize,
+                                        (IndexColorModel) null,
+                                        transparent);
+                        samplePoint =
+                                new LiteShape2(
+                                        geomFac.createPoint(
+                                                new Coordinate(symbolSize / 2, symbolSize / 2)),
+                                        null,
+                                        null,
+                                        false);
+                    } else {
+                        image = ImageUtils.createImage(w, h, (IndexColorModel) null, transparent);
+                        samplePoint =
+                                new LiteShape2(
+                                        geomFac.createPoint(new Coordinate(w / 2, h / 2)),
+                                        null,
+                                        null,
+                                        false);
+                    }
+
+                } catch (TransformException | FactoryException ex) {
+                    throw new RuntimeException(ex);
+                }
+
+                if (style2d != null && samplePoint != null) {
+
+                    Graphics2D graphics =
+                            ImageUtils.prepareTransparency(
+                                    transparent,
+                                    LegendUtils.getBackgroundColor(request),
+                                    image,
+                                    null);
+
+                    graphics.setRenderingHint(
+                            RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+                    shapePainter.paint(graphics, samplePoint, style2d, style2d.getMinScale());
+                    graphics.dispose();
+                }
             } else {
+                image = ImageUtils.createImage(w, h, (IndexColorModel) null, transparent);
+
+                Graphics2D graphics =
+                        ImageUtils.prepareTransparency(
+                                transparent, LegendUtils.getBackgroundColor(request), image, null);
+
+                graphics.setRenderingHint(
+                        RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+                final List<Symbolizer> symbolizers = applicableRules[i].symbolizers();
                 for (Symbolizer symbolizer : symbolizers) {
                     // skip raster symbolizers
                     if (!(symbolizer instanceof RasterSymbolizer)) {
@@ -384,13 +426,14 @@ public class BufferedImageLegendGraphicBuilder extends LegendGraphicBuilder {
                         }
                     }
                 }
+                graphics.dispose();
             }
+
             if (image != null && titleImage != null) {
                 layersImages.add(titleImage);
                 titleImage = null;
             }
             legendsStack.add(image);
-            graphics.dispose();
         }
         int labelMargin = 3;
         if (!StringUtils.isEmpty(request.getLegendOptions().get("labelMargin"))) {
