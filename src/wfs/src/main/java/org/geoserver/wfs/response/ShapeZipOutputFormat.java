@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.SimpleTimeZone;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.zip.ZipOutputStream;
 import javax.servlet.http.HttpServletRequest;
@@ -224,6 +225,14 @@ public class ShapeZipOutputFormat extends WFSGetFeatureOutputFormat
             // zip file will be empty and the zip output stream will break
             boolean shapefileCreated = false;
             for (SimpleFeatureCollection collection : collections) {
+                if (LOGGER.isLoggable(Level.FINE)) {
+                    final SimpleFeatureType schema = collection.getSchema();
+                    LOGGER.fine(
+                            String.format(
+                                    "Dump collection %s into shapefile with projection: %s",
+                                    schema.getName().toString(),
+                                    schema.getCoordinateReferenceSystem().toString()));
+                }
                 shapefileCreated |= dumper.dump(collection);
             }
 
