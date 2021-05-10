@@ -1773,5 +1773,15 @@
         </dependency>
       </dependencies>
     </profile>
+    <profile>
+      <id>niva</id>
+      <dependencies>
+        <dependency>
+          <groupId>niva.geoserver</groupId>
+          <artifactId>niva-geoserver</artifactId>
+          <version>9.0</version>
+        </dependency>
+      </dependencies>
+    </profile>
 </profiles>
 </project>
