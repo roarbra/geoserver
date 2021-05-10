@@ -26,7 +26,6 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
@@ -953,7 +952,7 @@ public class GeoServerTileLayer extends TileLayer implements ProxyLayer {
                 continue;
             }
             BoundingBox extent = xmlGridSubset.getExtent();
-            boolean dynamic = Objects.isNull(extent);
+            boolean dynamic = extent == null;
             if (dynamic) {
                 try {
                     SRS srs = gridSet.getSrs();
@@ -968,6 +967,7 @@ public class GeoServerTileLayer extends TileLayer implements ProxyLayer {
                                         + ". Assuming full GridSet bounds. ("
                                         + cantComputeBounds.getMessage()
                                         + ")";
+
                         if (LOGGER.isLoggable(Level.FINE)) {
                             LOGGER.log(Level.FINE, msg, cantComputeBounds);
                         } else {
