@@ -146,6 +146,7 @@ create index "idx_product_footprint" on product using GIST("footprint");
  CREATE INDEX "idx_product_timeStart" ON product ("timeStart");
  CREATE INDEX "idx_product_timeEnd" ON product ("timeEnd");
  CREATE INDEX "idx_product_eoParentIdentifier" ON product ("eoParentIdentifier");
+ CREATE INDEX "idx_product_eoParentIdentifier_timeEnd_timeStart" ON product("eoParentIdentifier","timeEnd","timeStart");
  CREATE INDEX "idx_product_eoProductionStatus" ON product ("eoProductionStatus");
  CREATE INDEX "idx_product_eoAcquisitionType" ON product ("eoAcquisitionType");
  CREATE INDEX "idx_product_eoOrbitNumber" ON product ("eoOrbitNumber");
@@ -187,7 +188,8 @@ create index "idx_product_footprint" on product using GIST("footprint");
  CREATE INDEX "idx_product_atmSpeciesError" on product using GIN("atmSpeciesError");
  CREATE INDEX "idx_product_atmAlgorithmName" on product using GIN("atmAlgorithmName");
  CREATE INDEX "idx_product_atmAlgorithmVersion" on product using GIN("atmAlgorithmVersion");
- 
+ -- extra attribute to support heterogeneous CRS mosaic queries
+ CREATE INDEX "idx_product_crs" ON product ("crs");
 
  -- the eo metadata storage (large files, not used for search, thus separate table)
 create table product_metadata (

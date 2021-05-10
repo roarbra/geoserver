@@ -60,3 +60,5 @@ officially part of the GeoServer releases. They are however built along with the
    cog/index
    cov-json/index
    smart-data-loader/index
+   schemaless-features/index
+   web-service-auth/index
