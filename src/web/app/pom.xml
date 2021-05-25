@@ -1804,14 +1804,14 @@
           <version>${gs.version}</version>
         </dependency>
       </dependencies>
-    </profile>    
+    </profile>
     <profile>
       <id>niva</id>
       <dependencies>
         <dependency>
           <groupId>niva.geoserver</groupId>
           <artifactId>niva-geoserver</artifactId>
-          <version>9.0</version>
+          <version>9.1</version>
         </dependency>
       </dependencies>
     </profile>
