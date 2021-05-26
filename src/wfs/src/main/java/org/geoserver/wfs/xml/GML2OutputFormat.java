@@ -114,70 +114,89 @@ public class GML2OutputFormat extends WFSGetFeatureOutputFormat
         boolean padWithZeros = false;
         boolean forcedDecimal = false;
         for (int i = 0; i < results.getFeature().size(); i++) {
-            // FeatureResults features = (FeatureResults) f.next();
             FeatureCollection features = results.getFeature().get(i);
             SimpleFeatureType featureType = (SimpleFeatureType) features.getSchema();
 
             ResourceInfo meta =
                     catalog.getResourceByName(featureType.getName(), ResourceInfo.class);
+            if (meta != null) {
+                String prefix = meta.getNamespace().getPrefix();
+                String uri = meta.getNamespace().getURI();
 
-            String prefix = meta.getNamespace().getPrefix();
-            String uri = meta.getNamespace().getURI();
+                ftNames.declareNamespace(features.getSchema(), prefix, uri);
 
-            ftNames.declareNamespace(features.getSchema(), prefix, uri);
+                if (ftNamespaces.containsKey(uri)) {
+                    String location = (String) ftNamespaces.get(uri);
+                    ftNamespaces.put(uri, location + "," + urlEncode(meta.prefixedName()));
+                } else {
+                    // don't blindly assume it's a feature type, this class is used also by WMS
+                    // FeatureInfo
+                    // meaning it might be a coverage or a remote wms layer
+                    if (meta instanceof FeatureTypeInfo) {
+                        String location =
+                                typeSchemaLocation(
+                                        geoServer.getGlobal(),
+                                        (FeatureTypeInfo) meta,
+                                        request.getBaseUrl());
+                        ftNamespaces.put(uri, location);
+                    }
+                }
 
-            if (ftNamespaces.containsKey(uri)) {
-                String location = (String) ftNamespaces.get(uri);
-                ftNamespaces.put(uri, location + "," + urlEncode(meta.prefixedName()));
-            } else {
-                // don't blindly assume it's a feature type, this class is used also by WMS
-                // FeatureInfo
-                // meaning it might be a coverage or a remote wms layer
+                // JD: wfs reprojection: should not set srs form metadata but from
+                // the request
+                // srs = Integer.parseInt(meta.getSRS());
+                Query query = request.getQueries().get(i);
+                try {
+                    String srsName =
+                            query.getSrsName() != null ? query.getSrsName().toString() : null;
+                    if (srsName == null) {
+                        // no SRS in query...asking for the default?
+                        srsName = meta.getSRS();
+                    }
+                    if (srsName != null) {
+                        CoordinateReferenceSystem crs = CRS.decode(srsName);
+                        String epsgCode = GML2EncodingUtils.epsgCode(crs);
+                        srs = Integer.parseInt(epsgCode);
+                    }
+                } catch (Exception e) {
+                    LOGGER.log(Level.WARNING, "Problem encoding:" + query.getSrsName(), e);
+                }
+
+                // track num decimals, in cases where the query has multiple types we choose the max
+                // of all the values (same deal as above, might not be a vector due to
+                // GetFeatureInfo
+                // reusing this)
                 if (meta instanceof FeatureTypeInfo) {
-                    String location =
-                            typeSchemaLocation(
-                                    geoServer.getGlobal(),
-                                    (FeatureTypeInfo) meta,
-                                    request.getBaseUrl());
-                    ftNamespaces.put(uri, location);
+                    int ftiDecimals = ((FeatureTypeInfo) meta).getNumDecimals();
+                    if (ftiDecimals > 0) {
+                        numDecimals =
+                                numDecimals == -1
+                                        ? ftiDecimals
+                                        : Math.max(numDecimals, ftiDecimals);
+                    }
+                    boolean pad = ((FeatureTypeInfo) meta).getPadWithZeros();
+                    if (pad) {
+                        padWithZeros = true;
+                    }
+                    boolean force = ((FeatureTypeInfo) meta).getForcedDecimal();
+                    if (force) {
+                        forcedDecimal = true;
+                    }
                 }
-            }
+            } else {
+                // FeatureResult isn't directly found within Geoserver catalog
 
-            // JD: wfs reprojection: should not set srs form metadata but from
-            // the request
-            // srs = Integer.parseInt(meta.getSRS());
-            Query query = request.getQueries().get(i);
-            try {
-                String srsName = query.getSrsName() != null ? query.getSrsName().toString() : null;
-                if (srsName == null) {
-                    // no SRS in query...asking for the default?
-                    srsName = meta.getSRS();
-                }
-                if (srsName != null) {
-                    CoordinateReferenceSystem crs = CRS.decode(srsName);
-                    String epsgCode = GML2EncodingUtils.epsgCode(crs);
-                    srs = Integer.parseInt(epsgCode);
-                }
-            } catch (Exception e) {
-                LOGGER.log(Level.WARNING, "Problem encoding:" + query.getSrsName(), e);
-            }
-
-            // track num decimals, in cases where the query has multiple types we choose the max
-            // of all the values (same deal as above, might not be a vector due to GetFeatureInfo
-            // reusing this)
-            if (meta instanceof FeatureTypeInfo) {
-                int ftiDecimals = ((FeatureTypeInfo) meta).getNumDecimals();
-                if (ftiDecimals > 0) {
-                    numDecimals =
-                            numDecimals == -1 ? ftiDecimals : Math.max(numDecimals, ftiDecimals);
-                }
-                boolean pad = ((FeatureTypeInfo) meta).getPadWithZeros();
-                if (pad) {
-                    padWithZeros = true;
-                }
-                boolean force = ((FeatureTypeInfo) meta).getForcedDecimal();
-                if (force) {
-                    forcedDecimal = true;
+                Query query = request.getQueries().get(i);
+                try {
+                    String srsName =
+                            query.getSrsName() != null ? query.getSrsName().toString() : null;
+                    if (srsName != null) {
+                        CoordinateReferenceSystem crs = CRS.decode(srsName);
+                        String epsgCode = GML2EncodingUtils.epsgCode(crs);
+                        srs = Integer.parseInt(epsgCode);
+                    }
+                } catch (Exception e) {
+                    LOGGER.log(Level.WARNING, "Problem encoding:" + query.getSrsName(), e);
                 }
             }
         }
