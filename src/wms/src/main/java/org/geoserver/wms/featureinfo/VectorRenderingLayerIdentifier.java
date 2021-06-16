@@ -182,29 +182,37 @@ public class VectorRenderingLayerIdentifier extends AbstractVectorLayerIdentifie
             if (radius < buffer) {
                 radius = buffer;
             }
+
+            // prepare the image we are going to check rendering against
+            // Make it larger than hitArea to make sure we paint all transformed features
+            int paintAreaSize = radius * 8;
+            int centerPaintArea = radius * 4;
             Envelope targetRasterSpace =
                     new Envelope(
-                            params.getX() - radius,
-                            params.getX() + radius,
-                            params.getY() - radius,
-                            params.getY() + radius);
+                            params.getX() - centerPaintArea,
+                            params.getX() + centerPaintArea,
+                            params.getY() - centerPaintArea,
+                            params.getY() + centerPaintArea);
+            
+            LOGGER.fine(String.format("FeatureInfo targetRasterSpace: minx,miny,maxx,maxy (%f,%f,%f,%f)", 
+                          targetRasterSpace.getMinX(), targetRasterSpace.getMinY(),
+                          targetRasterSpace.getMaxX(), targetRasterSpace.getMaxY()));
+            
             Envelope targetModelSpace =
                     JTS.transform(targetRasterSpace, new AffineTransform2D(screenToWorld));
 
-            // prepare the image we are going to check rendering against
-            int paintAreaSize = radius * 2;
             final BufferedImage image =
                     ImageTypeSpecifier.createFromBufferedImageType(BufferedImage.TYPE_INT_ARGB)
                             .createBufferedImage(paintAreaSize, paintAreaSize);
             image.setAccelerationPriority(0);
 
             // and now the listener that will check for painted pixels
-            int mid = radius;
-            int hitAreaSize = buffer * 2 + 1;
-            if (hitAreaSize > paintAreaSize) {
-                hitAreaSize = paintAreaSize;
-            }
-            Rectangle hitArea = new Rectangle(mid - buffer, mid - buffer, hitAreaSize, hitAreaSize);
+            int origo = (int)Math.floor(paintAreaSize / 2) - radius;
+            int hitAreaSize = radius * 2 + 1;
+            Rectangle hitArea = new Rectangle(origo, origo, hitAreaSize, hitAreaSize);
+            LOGGER.fine(String.format("FeatureInfo hitArea: x,y (%f,%f) w,h (%f,%f)",
+                    hitArea.getX(), hitArea.getY(), hitArea.getWidth(), hitArea.getHeight()));
+            
             final FeatureInfoRenderListener featureInfoListener =
                     new FeatureInfoRenderListener(
                             image, hitArea, maxFeatures, params.getPropertyNames());
@@ -624,6 +632,7 @@ public class VectorRenderingLayerIdentifier extends AbstractVectorLayerIdentifie
         public void featureRenderer(SimpleFeature feature) {
             // TODO: handle the case the feature became a grid due to rendering transformations?
 
+            LOGGER.fine("featureInfo rendered " + feature.getID());
             // feature caught by more than one rule?
             if (feature == previous) {
                 // clean the hit area anyways before returning, as the feature might
@@ -652,6 +661,7 @@ public class VectorRenderingLayerIdentifier extends AbstractVectorLayerIdentifie
             }
 
             if (hit) {
+                LOGGER.fine("featureInfo hit!");
                 previous = feature;
                 if (features.size() < maxFeatures) {
                     SimpleFeature retyped = retype(feature);
