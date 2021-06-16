@@ -193,11 +193,15 @@ public class VectorRenderingLayerIdentifier extends AbstractVectorLayerIdentifie
                             params.getX() + centerPaintArea,
                             params.getY() - centerPaintArea,
                             params.getY() + centerPaintArea);
-            
-            LOGGER.fine(String.format("FeatureInfo targetRasterSpace: minx,miny,maxx,maxy (%f,%f,%f,%f)", 
-                          targetRasterSpace.getMinX(), targetRasterSpace.getMinY(),
-                          targetRasterSpace.getMaxX(), targetRasterSpace.getMaxY()));
-            
+
+            LOGGER.fine(
+                    String.format(
+                            "FeatureInfo targetRasterSpace: minx,miny,maxx,maxy (%f,%f,%f,%f)",
+                            targetRasterSpace.getMinX(),
+                            targetRasterSpace.getMinY(),
+                            targetRasterSpace.getMaxX(),
+                            targetRasterSpace.getMaxY()));
+
             Envelope targetModelSpace =
                     JTS.transform(targetRasterSpace, new AffineTransform2D(screenToWorld));
 
@@ -207,12 +211,17 @@ public class VectorRenderingLayerIdentifier extends AbstractVectorLayerIdentifie
             image.setAccelerationPriority(0);
 
             // and now the listener that will check for painted pixels
-            int origo = (int)Math.floor(paintAreaSize / 2) - radius;
+            int origo = (int) Math.floor(paintAreaSize / 2) - radius;
             int hitAreaSize = radius * 2 + 1;
             Rectangle hitArea = new Rectangle(origo, origo, hitAreaSize, hitAreaSize);
-            LOGGER.fine(String.format("FeatureInfo hitArea: x,y (%f,%f) w,h (%f,%f)",
-                    hitArea.getX(), hitArea.getY(), hitArea.getWidth(), hitArea.getHeight()));
-            
+            LOGGER.fine(
+                    String.format(
+                            "FeatureInfo hitArea: x,y (%f,%f) w,h (%f,%f)",
+                            hitArea.getX(),
+                            hitArea.getY(),
+                            hitArea.getWidth(),
+                            hitArea.getHeight()));
+
             final FeatureInfoRenderListener featureInfoListener =
                     new FeatureInfoRenderListener(
                             image, hitArea, maxFeatures, params.getPropertyNames());
