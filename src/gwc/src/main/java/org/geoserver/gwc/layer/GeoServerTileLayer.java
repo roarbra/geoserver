@@ -573,7 +573,9 @@ public class GeoServerTileLayer extends TileLayer implements ProxyLayer {
     protected ConveyorTile getMetatilingReponse(
             ConveyorTile tile, final boolean tryCache, final int metaX, final int metaY)
             throws GeoWebCacheException, IOException {
-
+        if (metaY <= 0 || metaX <= 0) {
+            throw new IllegalArgumentException("metaX and metaY must be greater than 0.");
+        }
         final GridSubset gridSubset = getGridSubset(tile.getGridSetId());
         final int zLevel = (int) tile.getTileIndex()[2];
         tile.setMetaTileCacheOnly(!gridSubset.shouldCacheAtZoom(zLevel));
