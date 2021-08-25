@@ -4,6 +4,7 @@
  */
 package org.geoserver.featurestemplating.ogcapi;
 
+import static org.geoserver.featurestemplating.builders.EncodingHints.isSingleFeatureRequest;
 import static org.geoserver.ogcapi.features.FeatureService.ITEM_ID;
 import static org.springframework.web.context.request.RequestAttributes.SCOPE_REQUEST;
 
@@ -11,14 +12,16 @@ import com.fasterxml.jackson.core.JsonEncoding;
 import com.fasterxml.jackson.core.JsonFactory;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.math.BigInteger;
 import java.util.Optional;
 import org.geoserver.config.GeoServer;
-import org.geoserver.featurestemplating.configuration.TemplateConfiguration;
 import org.geoserver.featurestemplating.configuration.TemplateIdentifier;
+import org.geoserver.featurestemplating.configuration.TemplateLoader;
 import org.geoserver.featurestemplating.writers.GeoJSONWriter;
+import org.geoserver.featurestemplating.writers.TemplateOutputWriter;
 import org.geoserver.platform.Operation;
 import org.geoserver.wfs.request.FeatureCollectionResponse;
-import org.opengis.referencing.FactoryException;
+import org.geotools.geometry.jts.ReferencedEnvelope;
 import org.springframework.web.context.request.RequestContextHolder;
 
 /**
@@ -29,27 +32,34 @@ class GeoJSONTemplateGetFeatureResponse
         extends org.geoserver.featurestemplating.wfs.GeoJSONTemplateGetFeatureResponse {
 
     public GeoJSONTemplateGetFeatureResponse(
-            GeoServer gs, TemplateConfiguration configuration, TemplateIdentifier identifier) {
+            GeoServer gs, TemplateLoader configuration, TemplateIdentifier identifier) {
         super(gs, configuration, identifier);
     }
 
     @Override
     protected GeoJSONWriter getOutputWriter(OutputStream output) throws IOException {
-        return new GeoJSONAPIWriter(new JsonFactory().createGenerator(output, JsonEncoding.UTF8));
+        return new GeoJSONAPIWriter(
+                new JsonFactory().createGenerator(output, JsonEncoding.UTF8), identifier);
     }
 
     @Override
-    protected void writeAdditionFields(
-            GeoJSONWriter writer, FeatureCollectionResponse featureCollection, Operation getFeature)
-            throws IOException, FactoryException {
+    protected void writeAdditionalFieldsInternal(
+            TemplateOutputWriter writer,
+            FeatureCollectionResponse featureCollection,
+            Operation getFeature,
+            BigInteger featureCount,
+            ReferencedEnvelope bounds)
+            throws IOException {
         boolean isGeoJson = identifier.equals(TemplateIdentifier.GEOJSON);
         if (!isGeoJson) {
-            super.writeAdditionFields(writer, featureCollection, getFeature);
+            super.writeAdditionalFieldsInternal(
+                    writer, featureCollection, getFeature, featureCount, bounds);
             return;
         }
-
-        writer.writeNumberReturned();
-        writer.writeTimeStamp();
+        if (!isSingleFeatureRequest()) {
+            writer.writeNumberReturned();
+            writer.writeTimeStamp();
+        }
         String collId = getFeature.getParameters()[0].toString();
         String name = helper.getFeatureType(collId).prefixedName();
         ((GeoJSONAPIWriter) writer)

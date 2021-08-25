@@ -5,8 +5,11 @@
 package org.geoserver.featurestemplating.builders;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import org.geoserver.featurestemplating.builders.impl.TemplateBuilderContext;
+import org.geoserver.featurestemplating.builders.visitors.TemplateVisitor;
 import org.geoserver.featurestemplating.writers.TemplateOutputWriter;
 
 /** Basic interface for all the builders */
@@ -31,6 +34,23 @@ public interface TemplateBuilder {
      * @return the builder's children list
      */
     default List<TemplateBuilder> getChildren() {
-        return null;
+        return Collections.emptyList();
     }
+
+    /**
+     * Get the encoding hints held by this TemplateBuilder.
+     *
+     * @return
+     */
+    Map<String, Object> getEncodingHints();
+
+    /**
+     * Add an encoding hint to the ones held by this builder.
+     *
+     * @param key the hint key.
+     * @param value the hint value.
+     */
+    void addEncodingHint(String key, Object value);
+
+    Object accept(TemplateVisitor visitor, Object value);
 }

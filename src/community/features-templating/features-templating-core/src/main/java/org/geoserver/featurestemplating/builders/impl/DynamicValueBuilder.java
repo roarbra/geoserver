@@ -5,14 +5,20 @@
 package org.geoserver.featurestemplating.builders.impl;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.geoserver.featurestemplating.builders.AbstractTemplateBuilder;
+import org.geoserver.featurestemplating.builders.JSONFieldSupport;
+import org.geoserver.featurestemplating.builders.visitors.TemplateVisitor;
 import org.geoserver.featurestemplating.expressions.TemplateCQLManager;
 import org.geoserver.featurestemplating.writers.TemplateOutputWriter;
+import org.geotools.feature.ComplexAttributeImpl;
 import org.geotools.filter.AttributeExpressionImpl;
 import org.geotools.util.logging.Logging;
-import org.opengis.filter.expression.*;
+import org.opengis.feature.Attribute;
+import org.opengis.feature.ComplexAttribute;
+import org.opengis.filter.expression.Expression;
 import org.xml.sax.helpers.NamespaceSupport;
 
 /** Evaluates xpath and cql functions, writing their results to the output. */
@@ -34,8 +40,12 @@ public class DynamicValueBuilder extends AbstractTemplateBuilder {
         TemplateCQLManager cqlManager = new TemplateCQLManager(expression, namespaces);
         if (expression.startsWith("$${")) {
             this.cql = cqlManager.getExpressionFromString();
+        } else if (expression.equals("${.}")) {
+            this.cql = cqlManager.getThis();
         } else if (expression.startsWith("${")) {
             this.xpath = cqlManager.getAttributeExpressionFromString();
+        } else {
+            throw new IllegalArgumentException("Invalid value: " + expression);
         }
         this.contextPos = cqlManager.getContextPos();
     }
@@ -43,14 +53,15 @@ public class DynamicValueBuilder extends AbstractTemplateBuilder {
     @Override
     public void evaluate(TemplateOutputWriter writer, TemplateBuilderContext context)
             throws IOException {
-        Object o = null;
         if (evaluateFilter(context)) {
+            Object o = null;
             if (xpath != null) {
                 o = evaluateXPath(context);
             } else if (cql != null) {
-                o = evaluateExpressions(context);
+                o = evaluateExpressions(cql, context);
             }
-            writeValue(writer, o);
+            addChildrenEvaluationToEncodingHints(writer, context);
+            writeValue(writer, o, context);
         }
     }
 
@@ -59,12 +70,14 @@ public class DynamicValueBuilder extends AbstractTemplateBuilder {
      *
      * @param writer the template writer
      * @param value the value to write
+     * @param context
      * @throws IOException
      */
-    protected void writeValue(TemplateOutputWriter writer, Object value) throws IOException {
+    protected void writeValue(
+            TemplateOutputWriter writer, Object value, TemplateBuilderContext context)
+            throws IOException {
         if (canWriteValue(value)) {
-            writeKey(writer);
-            writer.writeElementValue(value);
+            writer.writeElementNameAndValue(getKey(context), value, getEncodingHints());
         }
     }
 
@@ -82,6 +95,7 @@ public class DynamicValueBuilder extends AbstractTemplateBuilder {
      * @param context the context against which evaluate the xpath
      * @return the evaluation result
      */
+    // TODO: thi and evaluateExpression are almost identical. Can they be merged?
     protected Object evaluateXPath(TemplateBuilderContext context) {
         int i = 0;
         while (i < contextPos) {
@@ -90,7 +104,9 @@ public class DynamicValueBuilder extends AbstractTemplateBuilder {
         }
         Object result = null;
         try {
-            result = xpath.evaluate(context.getCurrentObj());
+            Object contextObject = getContextObject(context);
+            result = xpath.evaluate(contextObject);
+            result = JSONFieldSupport.parseWhenJSON(xpath, contextObject, result);
         } catch (Exception e) {
             LOGGER.log(
                     Level.INFO,
@@ -103,10 +119,11 @@ public class DynamicValueBuilder extends AbstractTemplateBuilder {
     /**
      * Evaluate the Expression against the provided context
      *
+     * @param expression
      * @param context the context against which evaluate the xpath
      * @return the evaluation result
      */
-    protected Object evaluateExpressions(TemplateBuilderContext context) {
+    protected Object evaluateExpressions(Expression expression, TemplateBuilderContext context) {
         Object result = null;
         try {
             int i = 0;
@@ -114,7 +131,9 @@ public class DynamicValueBuilder extends AbstractTemplateBuilder {
                 context = context.getParent();
                 i++;
             }
-            result = cql.evaluate(context.getCurrentObj());
+            Object contextObject = context.getCurrentObj();
+            result = expression.evaluate(contextObject);
+            result = JSONFieldSupport.parseWhenJSON(cql, contextObject, result);
         } catch (Exception e) {
             LOGGER.log(Level.INFO, "Unable to evaluate expression. Exception: {0}", e.getMessage());
         }
@@ -128,7 +147,18 @@ public class DynamicValueBuilder extends AbstractTemplateBuilder {
      * @return true if can write the value else false
      */
     protected boolean canWriteValue(Object value) {
-        return true;
+        if (value instanceof ComplexAttributeImpl) {
+            return canWriteValue(((ComplexAttribute) value).getValue());
+        } else if (value instanceof Attribute) {
+            return canWriteValue(((Attribute) value).getValue());
+        } else if (value instanceof List && ((List) value).size() == 0) {
+            if (((List) value).size() == 0) return false;
+            else return true;
+        } else if (value == null) {
+            return false;
+        } else {
+            return true;
+        }
     }
 
     public NamespaceSupport getNamespaces() {
@@ -137,5 +167,42 @@ public class DynamicValueBuilder extends AbstractTemplateBuilder {
 
     public int getContextPos() {
         return contextPos;
+    }
+
+    public boolean checkNotNullValue(TemplateBuilderContext context) {
+        Object o = null;
+        if (xpath != null) {
+
+            o = evaluateXPath(context);
+
+        } else if (cql != null) {
+            o = evaluateExpressions(cql, context);
+        }
+        if (o == null) return false;
+        return true;
+    }
+
+    public void setCql(Expression cql) {
+        this.cql = cql;
+    }
+
+    public void setXpath(AttributeExpressionImpl xpath) {
+        this.xpath = xpath;
+    }
+
+    @Override
+    public Object accept(TemplateVisitor visitor, Object value) {
+        return visitor.visit(this, value);
+    }
+
+    private Object getContextObject(TemplateBuilderContext context) {
+        Object contextObject = context.getCurrentObj();
+        if (contextObject != null && contextObject instanceof List) {
+            List<Object> multipleValue = (List<Object>) contextObject;
+            if (!multipleValue.isEmpty()) {
+                contextObject = multipleValue.get(0);
+            }
+        }
+        return contextObject;
     }
 }

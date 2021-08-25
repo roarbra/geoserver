@@ -11,22 +11,27 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import it.geosolutions.imageio.plugins.tiff.BaselineTIFFTagSet;
 import it.geosolutions.imageio.plugins.tiff.PrivateTIFFTagSet;
+import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.Point2D;
 import java.awt.geom.Rectangle2D;
+import java.awt.image.BufferedImage;
 import java.awt.image.DataBuffer;
 import java.awt.image.Raster;
 import java.awt.image.RenderedImage;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URISyntaxException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -43,21 +48,24 @@ import javax.imageio.stream.FileImageInputStream;
 import javax.xml.namespace.QName;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.FilenameUtils;
+import org.geoserver.catalog.CoverageInfo;
 import org.geoserver.catalog.FeatureTypeInfo;
 import org.geoserver.catalog.LayerInfo;
 import org.geoserver.config.GeoServer;
 import org.geoserver.data.test.MockData;
 import org.geoserver.data.test.SystemTestData;
 import org.geoserver.platform.GeoServerExtensions;
+import org.geoserver.platform.resource.Resource;
 import org.geoserver.util.IOUtils;
 import org.geoserver.wcs.CoverageCleanerCallback;
 import org.geoserver.wps.ProcessEvent;
-import org.geoserver.wps.ProcessListener;
 import org.geoserver.wps.WPSTestSupport;
 import org.geoserver.wps.executor.ExecutionStatus;
 import org.geoserver.wps.executor.ProcessState;
+import org.geoserver.wps.ppio.ComplexPPIO;
 import org.geoserver.wps.ppio.WFSPPIO;
 import org.geoserver.wps.ppio.ZipArchivePPIO;
+import org.geoserver.wps.process.RawData;
 import org.geoserver.wps.resource.WPSResourceManager;
 import org.geotools.coverage.grid.GridCoverage2D;
 import org.geotools.coverage.grid.GridEnvelope2D;
@@ -65,8 +73,12 @@ import org.geotools.coverage.grid.GridGeometry2D;
 import org.geotools.coverage.grid.io.imageio.geotiff.GeoTiffIIOMetadataDecoder;
 import org.geotools.coverage.util.CoverageUtilities;
 import org.geotools.coverage.util.FeatureUtilities;
+import org.geotools.data.DataSourceException;
+import org.geotools.data.DataUtilities;
+import org.geotools.data.Transaction;
 import org.geotools.data.shapefile.ShapefileDataStore;
 import org.geotools.data.simple.SimpleFeatureCollection;
+import org.geotools.data.simple.SimpleFeatureReader;
 import org.geotools.data.util.DefaultProgressListener;
 import org.geotools.data.util.NullProgressListener;
 import org.geotools.feature.NameImpl;
@@ -76,7 +88,14 @@ import org.geotools.geojson.feature.FeatureJSON;
 import org.geotools.geometry.DirectPosition2D;
 import org.geotools.geometry.Envelope2D;
 import org.geotools.geometry.jts.JTS;
+import org.geotools.geometry.jts.ReferencedEnvelope;
 import org.geotools.geometry.jts.WKTReader2;
+import org.geotools.geopkg.FeatureEntry;
+import org.geotools.geopkg.GeoPackage;
+import org.geotools.geopkg.Tile;
+import org.geotools.geopkg.TileEntry;
+import org.geotools.geopkg.TileMatrix;
+import org.geotools.geopkg.TileReader;
 import org.geotools.image.test.ImageAssert;
 import org.geotools.process.ProcessException;
 import org.geotools.referencing.CRS;
@@ -117,6 +136,7 @@ import org.w3c.dom.Node;
 public class DownloadProcessTest extends WPSTestSupport {
 
     private static final FilterFactory2 FF = FeatureUtilities.DEFAULT_FILTER_FACTORY;
+    private static final double EPS = 1e-6;
 
     private static QName MIXED_RES = new QName(WCS_URI, "mixedres", WCS_PREFIX);
     private static QName HETEROGENEOUS_CRS = new QName(WCS_URI, "hcrs", WCS_PREFIX);
@@ -156,6 +176,73 @@ public class DownloadProcessTest extends WPSTestSupport {
             WGS84 = CRS.decode("EPSG:4326", true);
         } catch (FactoryException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    public static class AutoCloseableResource implements AutoCloseable {
+        WPSResourceManager resourceManager;
+
+        RawData rawData;
+
+        Resource resource;
+
+        public File getFile() {
+            return file;
+        }
+
+        File file;
+
+        public AutoCloseableResource(WPSResourceManager resourceManager, RawData rawData)
+                throws IOException {
+
+            // Final checks on the result
+            Assert.assertNotNull(rawData);
+
+            this.resourceManager = resourceManager;
+            this.rawData = rawData;
+            this.resource = resourceManager.getTemporaryResource(rawData.getFileExtension());
+            this.file = resource.file();
+            try (InputStream in = rawData.getInputStream()) {
+                IOUtils.copy(in, file);
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            // clean up process
+            IOUtils.delete(file, true);
+            resourceManager.finished(resourceManager.getExecutionId(true));
+        }
+    }
+
+    public static class AutoDisposableGeoTiffReader extends GeoTiffReader implements AutoCloseable {
+
+        public AutoDisposableGeoTiffReader(File file) throws DataSourceException {
+            super(file);
+        }
+
+        @Override
+        public void close() {
+            dispose();
+        }
+
+        public AutoDisposableGridCoverage2D read() throws IOException {
+            GridCoverage2D gc = super.read(null);
+            assertNotNull(gc);
+            return new AutoDisposableGridCoverage2D("", gc);
+        }
+    }
+
+    public static class AutoDisposableGridCoverage2D extends GridCoverage2D
+            implements AutoCloseable {
+
+        public AutoDisposableGridCoverage2D(CharSequence name, GridCoverage2D coverage) {
+            super(name, coverage);
+        }
+
+        @Override
+        public void close() {
+            CoverageCleanerCallback.disposeCoverage(this);
         }
     }
 
@@ -255,6 +342,10 @@ public class DownloadProcessTest extends WPSTestSupport {
         revertLayer(MockData.POLYGONS);
     }
 
+    private WPSResourceManager getResourceManager() {
+        return GeoServerExtensions.bean(WPSResourceManager.class);
+    }
+
     /**
      * Test get features as shapefile.
      *
@@ -269,36 +360,57 @@ public class DownloadProcessTest extends WPSTestSupport {
         SimpleFeatureCollection rawSource =
                 (SimpleFeatureCollection) ti.getFeatureSource(null, null).getFeatures();
         // Download
-        File shpeZip =
-                downloadProcess.execute(
-                        getLayerId(MockData.POLYGONS), // layerName
-                        null, // mail
-                        "application/zip", // outputFormat
-                        null, // targetCRS
-                        CRS.decode("EPSG:32615"), // roiCRS
-                        roi, // roi
-                        false, // cropToGeometry
-                        null, // interpolation
-                        null, // targetSizeX
-                        null, // targetSizeY
-                        null, // bandSelectIndices
-                        null, // Writing params
-                        false,
-                        false,
-                        0d,
-                        null,
-                        new NullProgressListener() // progressListener
-                        );
+        RawData shpeZip =
+                executeVectorDownload(
+                        downloadProcess,
+                        MockData.POLYGONS,
+                        "application/zip",
+                        "application/zip",
+                        "EPSG:32615",
+                        roi,
+                        false);
 
-        // Final checks on the result
-        Assert.assertNotNull(shpeZip);
+        try (AutoCloseableResource resource =
+                        new AutoCloseableResource(getResourceManager(), shpeZip);
+                InputStream is = new FileInputStream(resource.getFile())) {
+            ShapefileDataStore store = decodeShape(is);
+            SimpleFeatureCollection rawTarget = store.getFeatureSource().getFeatures();
+            Assert.assertNotNull(rawTarget);
+            Assert.assertEquals(rawSource.size(), rawTarget.size());
+            store.dispose();
+        }
+    }
 
-        ShapefileDataStore store = decodeShape(new FileInputStream(shpeZip));
-        SimpleFeatureCollection rawTarget =
-                (SimpleFeatureCollection) store.getFeatureSource().getFeatures();
-        Assert.assertNotNull(rawTarget);
-        Assert.assertEquals(rawSource.size(), rawTarget.size());
-        store.dispose();
+    @Test
+    public void testGetFeaturesAsGeoPackage() throws Exception {
+        // Creates the new process for the download
+        DownloadProcess downloadProcess = createDefaultTestingDownloadProcess();
+
+        FeatureTypeInfo ti = getCatalog().getFeatureTypeByName(getLayerId(MockData.POLYGONS));
+        SimpleFeatureCollection rawSource =
+                (SimpleFeatureCollection) ti.getFeatureSource(null, null).getFeatures();
+        // Download
+        RawData gpkgZip =
+                executeVectorDownload(
+                        downloadProcess,
+                        MockData.POLYGONS,
+                        GeopkgVectorPPIO.MIME_TYPE,
+                        "application/zip",
+                        "EPSG:32615",
+                        roi,
+                        false);
+
+        try (AutoCloseableResource resource =
+                        new AutoCloseableResource(getResourceManager(), gpkgZip);
+                InputStream is = new FileInputStream(resource.getFile());
+                GeoPackage geoPackage = decodeGeoPackage(is)) {
+            FeatureEntry entry = geoPackage.feature("Polygons");
+            assertNotNull(entry);
+            try (SimpleFeatureReader reader =
+                    geoPackage.reader(entry, Filter.INCLUDE, Transaction.AUTO_COMMIT)) {
+                assertEquals(rawSource.size(), DataUtilities.collection(reader).size());
+            }
+        }
     }
 
     /**
@@ -337,7 +449,7 @@ public class DownloadProcessTest extends WPSTestSupport {
 
         FeatureTypeInfo ti = getCatalog().getFeatureTypeByName(getLayerId(MockData.BUILDINGS));
         // Download
-        File shpeZip = null;
+        RawData shpeZip = null;
         ShapefileDataStore store = null;
         try {
             SimpleFeatureCollection rawSource =
@@ -347,7 +459,8 @@ public class DownloadProcessTest extends WPSTestSupport {
                     downloadProcess.execute(
                             getLayerId(MockData.BUILDINGS), // layerName
                             CQL.toFilter("ADDRESS = '123 Main Street'"), // filter
-                            "application/zip", // outputFormat
+                            "application/zip",
+                            "application/zip",
                             null, // targetCRS
                             DefaultGeographicCRS.WGS84, // roiCRS
                             roi, // roi
@@ -366,8 +479,10 @@ public class DownloadProcessTest extends WPSTestSupport {
 
             // Final checks on the result
             Assert.assertNotNull(shpeZip);
-            try (FileInputStream shapeFis = new FileInputStream(shpeZip)) {
-                store = decodeShape(shapeFis);
+            try (AutoCloseableResource resource =
+                            new AutoCloseableResource(resourceManager, shpeZip);
+                    InputStream in = new FileInputStream(resource.getFile())) {
+                store = decodeShape(in);
                 SimpleFeatureCollection rawTarget = store.getFeatureSource().getFeatures();
                 Assert.assertNotNull(rawTarget);
 
@@ -391,8 +506,36 @@ public class DownloadProcessTest extends WPSTestSupport {
             if (store != null) {
                 store.dispose();
             }
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
+    }
+
+    /** This method is used for extracting only the specified format files from a zipfile archive */
+    public static File[] extractFilesFromResource(final RawData zipResource, String format)
+            throws IOException, URISyntaxException {
+        File tempDirectory = new File(DownloadProcessTest.class.getResource(".").toURI());
+        tempDirectory = new File(tempDirectory, Long.toString(System.nanoTime()));
+        Assert.assertTrue(tempDirectory.mkdir());
+
+        try (InputStream in = zipResource.getInputStream()) {
+            IOUtils.decompress(in, tempDirectory);
+        }
+        Set<String> extensions = FORMAT_TO_EXTENSIONS.get(format);
+
+        File[] files =
+                tempDirectory.listFiles(
+                        new FilenameFilter() {
+                            @Override
+                            public boolean accept(File dir, String name) {
+                                String ext = FilenameUtils.getExtension(name);
+                                for (String extension : extensions) {
+                                    if (ext.equalsIgnoreCase(extension)) {
+                                        return true;
+                                    }
+                                }
+                                return false;
+                            }
+                        });
+        return files;
     }
 
     /**
@@ -410,94 +553,63 @@ public class DownloadProcessTest extends WPSTestSupport {
                 (SimpleFeatureCollection) ti.getFeatureSource(null, null).getFeatures();
 
         // Download as GML 2
-        File gml2Zip =
-                downloadProcess.execute(
-                        getLayerId(MockData.POLYGONS), // layerName
-                        null, // filter
-                        "application/wfs-collection-1.0", // outputFormat
-                        null, // targetCRS
-                        CRS.decode("EPSG:32615"), // roiCRS
-                        roi, // roi
-                        false, // cropToGeometry
-                        null, // interpolation
-                        null, // targetSizeX
-                        null, // targetSizeY
-                        null, // bandSelectIndices
-                        null, // Writing params
-                        false,
-                        false,
-                        0d,
-                        null,
-                        new NullProgressListener() // progressListener
-                        );
+        RawData gml2Zip =
+                executeVectorDownload(
+                        downloadProcess,
+                        MockData.POLYGONS,
+                        "application/wfs-collection-1.0",
+                        "application/zip",
+                        "EPSG:32615",
+                        roi,
+                        false);
 
         // Final checks on the result
-        Assert.assertNotNull(gml2Zip);
-
-        File[] files = extractFiles(gml2Zip, "XML");
-
-        SimpleFeatureCollection rawTarget =
-                (SimpleFeatureCollection) new WFSPPIO.WFS10().decode(new FileInputStream(files[0]));
-
-        Assert.assertNotNull(rawTarget);
-
-        Assert.assertEquals(rawSource.size(), rawTarget.size());
+        checkResult(rawSource, gml2Zip, "XML", new WFSPPIO.WFS10());
 
         // Download as GML 3
-        File gml3Zip =
-                downloadProcess.execute(
-                        getLayerId(MockData.POLYGONS), // layerName
-                        null, // filter
-                        "application/wfs-collection-1.1", // outputFormat
-                        null, // targetCRS
-                        CRS.decode("EPSG:32615"), // roiCRS
-                        roi, // roi
-                        false, // cropToGeometry
-                        null, // interpolation
-                        null, // targetSizeX
-                        null, // targetSizeY
-                        null, // bandSelectIndices
-                        null, // Writing params
-                        false,
-                        false,
-                        0d,
-                        null,
-                        new NullProgressListener() // progressListener
-                        );
+        RawData gml3Zip =
+                executeVectorDownload(
+                        downloadProcess,
+                        MockData.POLYGONS,
+                        "application/wfs-collection-1.1",
+                        "application/zip",
+                        "EPSG:32615",
+                        roi,
+                        false);
 
         // Final checks on the result
-        Assert.assertNotNull(gml3Zip);
-
-        files = extractFiles(gml2Zip, "XML");
-
-        rawTarget =
-                (SimpleFeatureCollection) new WFSPPIO.WFS11().decode(new FileInputStream(files[0]));
-
-        Assert.assertNotNull(rawTarget);
-
-        Assert.assertEquals(rawSource.size(), rawTarget.size());
+        checkResult(rawSource, gml3Zip, "XML", new WFSPPIO.WFS11());
     }
 
-    /** This method is used for extracting only the specified format files from a zipfile archive */
-    public static File[] extractFiles(final File zipFile, String format) throws IOException {
-        IOUtils.decompress(zipFile, zipFile.getParentFile());
-        Set<String> extensions = FORMAT_TO_EXTENSIONS.get(format);
-
-        File[] files =
-                zipFile.getParentFile()
-                        .listFiles(
-                                new FilenameFilter() {
-                                    public boolean accept(File dir, String name) {
-                                        String ext = FilenameUtils.getExtension(name);
-                                        for (String extension : extensions) {
-                                            if (ext.equalsIgnoreCase(extension)) {
-                                                return true;
-                                            }
-                                        }
-                                        return false;
-                                    }
-                                });
-        return files;
+    private RawData executeVectorDownload(
+            DownloadProcess downloadProcess,
+            QName polygons,
+            String mimeType,
+            String outputFormat,
+            String roiCRS,
+            Polygon roi,
+            boolean cropToGeometry)
+            throws FactoryException {
+        return downloadProcess.execute(
+                getLayerId(polygons), // layerName
+                null, // filter
+                mimeType,
+                outputFormat,
+                null, // targetCRS
+                CRS.decode(roiCRS), // roiCRS
+                roi, // roi
+                cropToGeometry, // cropToGeometry
+                null, // interpolation
+                null, // targetSizeX
+                null, // targetSizeY
+                null, // bandSelectIndices
+                null, // Writing params
+                false,
+                false,
+                0d,
+                null,
+                new NullProgressListener() // progressListener
+                );
     }
 
     /**
@@ -514,39 +626,43 @@ public class DownloadProcessTest extends WPSTestSupport {
         SimpleFeatureCollection rawSource =
                 (SimpleFeatureCollection) ti.getFeatureSource(null, null).getFeatures();
         // Download the file as Json
-        File jsonZip =
-                downloadProcess.execute(
-                        getLayerId(MockData.POLYGONS), // layerName
-                        null, // filter
-                        "application/json", // outputFormat
-                        null, // targetCRS
-                        CRS.decode("EPSG:32615"), // roiCRS
-                        roi, // roi
-                        false, // cropToGeometry
-                        null, // interpolation
-                        null, // targetSizeX
-                        null, // targetSizeY
-                        null, // bandSelectIndices
-                        null, // Writing params
-                        false,
-                        false,
-                        0d,
-                        null,
-                        new NullProgressListener() // progressListener
-                        );
+        RawData jsonZip =
+                executeVectorDownload(
+                        downloadProcess,
+                        MockData.POLYGONS,
+                        "application/json",
+                        "application/zip",
+                        "EPSG:32615",
+                        roi,
+                        false);
 
-        // Final checks on the result
-        Assert.assertNotNull(jsonZip);
+        checkResult(rawSource, jsonZip, "JSON", new FeatureJSON());
+    }
 
-        File[] files = extractFiles(jsonZip, "JSON");
-
-        SimpleFeatureCollection rawTarget =
-                (SimpleFeatureCollection)
-                        new FeatureJSON().readFeatureCollection(new FileInputStream(files[0]));
+    private void checkResult(
+            SimpleFeatureCollection rawSource,
+            RawData result,
+            String format,
+            Object featureCollectionReader)
+            throws Exception {
+        Assert.assertNotNull(result);
+        File[] files = extractFilesFromResource(result, format);
+        SimpleFeatureCollection rawTarget = null;
+        if (featureCollectionReader instanceof ComplexPPIO) {
+            rawTarget =
+                    (SimpleFeatureCollection)
+                            ((ComplexPPIO) featureCollectionReader)
+                                    .decode(new FileInputStream(files[0]));
+        } else if (featureCollectionReader instanceof FeatureJSON) {
+            rawTarget =
+                    (SimpleFeatureCollection)
+                            ((FeatureJSON) featureCollectionReader)
+                                    .readFeatureCollection(new FileInputStream(files[0]));
+        }
 
         Assert.assertNotNull(rawTarget);
-
         Assert.assertEquals(rawSource.size(), rawTarget.size());
+        IOUtils.delete(files[0].getParentFile());
     }
 
     /**
@@ -580,11 +696,12 @@ public class DownloadProcessTest extends WPSTestSupport {
                         JTS.transform(
                                 roi, CRS.findMathTransform(WGS84, CRS.decode("EPSG:900913", true)));
         // Download the coverage as tiff (Not reprojected)
-        File rasterZip =
+        RawData raster =
                 downloadProcess.execute(
                         getLayerId(MockData.USA_WORLDIMG), // layerName
                         null, // filter
                         "image/tiff", // outputFormat
+                        "image/tiff",
                         null, // targetCRS
                         WGS84, // roiCRS
                         roi, // roi
@@ -601,17 +718,10 @@ public class DownloadProcessTest extends WPSTestSupport {
                         new NullProgressListener() // progressListener
                         );
 
-        // Final checks on the result
-        Assert.assertNotNull(rasterZip);
-        GeoTiffReader reader = null;
-        GridCoverage2D gc = null, gcResampled = null;
-        try {
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            Assert.assertNotNull(tiffFiles);
-            Assert.assertTrue(tiffFiles.length > 0);
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-            Assert.assertNotNull(gc);
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
 
             Assert.assertEquals(
                     -130.88669845369998, gc.getEnvelope().getLowerCorner().getOrdinate(0), DELTA);
@@ -628,9 +738,9 @@ public class DownloadProcessTest extends WPSTestSupport {
                             gc.evaluate(
                                     new DirectPosition2D(
                                             new Point2D.Double(firstXRoi, firstYRoi - 1E-4)));
-            Assert.assertNotEquals(0, result[0]);
-            Assert.assertNotEquals(0, result[1]);
-            Assert.assertNotEquals(0, result[2]);
+            assertNotEquals(0, result[0]);
+            assertNotEquals(0, result[1]);
+            assertNotEquals(0, result[2]);
 
             // Take a pixel outside of the ROI
             result =
@@ -641,24 +751,14 @@ public class DownloadProcessTest extends WPSTestSupport {
             Assert.assertEquals(0, result[0]);
             Assert.assertEquals(0, result[1]);
             Assert.assertEquals(0, result[2]);
-
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
 
         // Download the coverage as tiff with clipToROI set to False (Crop on envelope)
-        rasterZip =
+        raster =
                 downloadProcess.execute(
                         getLayerId(MockData.USA_WORLDIMG), // layerName
                         null, // filter
+                        "image/tiff", // outputFormat
                         "image/tiff", // outputFormat
                         null, // targetCRS
                         WGS84, // roiCRS
@@ -676,15 +776,10 @@ public class DownloadProcessTest extends WPSTestSupport {
                         new NullProgressListener() // progressListener
                         );
 
-        // Final checks on the result
-        Assert.assertNotNull(rasterZip);
-        try {
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            Assert.assertNotNull(tiffFiles);
-            Assert.assertTrue(tiffFiles.length > 0);
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-            Assert.assertNotNull(gc);
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
 
             Assert.assertEquals(
                     -130.88669845369998, gc.getEnvelope().getLowerCorner().getOrdinate(0), DELTA);
@@ -701,9 +796,9 @@ public class DownloadProcessTest extends WPSTestSupport {
                             gc.evaluate(
                                     new DirectPosition2D(
                                             new Point2D.Double(firstXRoi, firstYRoi - 1E-4)));
-            Assert.assertNotEquals(0, result[0]);
-            Assert.assertNotEquals(0, result[1]);
-            Assert.assertNotEquals(0, result[2]);
+            assertNotEquals(0, result[0]);
+            assertNotEquals(0, result[1]);
+            assertNotEquals(0, result[2]);
 
             // Take a pixel outside of the ROI geometry but within the ROI's envelope
             // (We have set cropToROI = False)
@@ -712,26 +807,16 @@ public class DownloadProcessTest extends WPSTestSupport {
                             gc.evaluate(
                                     new DirectPosition2D(
                                             new Point2D.Double(firstXRoi - 2, firstYRoi - 0.5)));
-            Assert.assertNotEquals(0, result[0]);
-            Assert.assertNotEquals(0, result[1]);
-            Assert.assertNotEquals(0, result[2]);
-
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
+            assertNotEquals(0, result[0]);
+            assertNotEquals(0, result[1]);
+            assertNotEquals(0, result[2]);
         }
         // Download the coverage as tiff (Reprojected)
-        File resampledZip =
+        RawData resampled =
                 downloadProcess.execute(
                         getLayerId(MockData.USA_WORLDIMG), // layerName
                         null, // filter
+                        "image/tiff", // outputFormat
                         "image/tiff", // outputFormat
                         CRS.decode("EPSG:900913", true), // targetCRS
                         CRS.decode("EPSG:900913", true), // roiCRS
@@ -749,15 +834,11 @@ public class DownloadProcessTest extends WPSTestSupport {
                         new NullProgressListener() // progressListener
                         );
 
-        // Final checks on the result
-        Assert.assertNotNull(resampledZip);
-
-        try {
-            File[] files = extractFiles(resampledZip, "GTIFF");
-            reader = new GeoTiffReader(files[files.length - 1]);
-            gcResampled = reader.read(null);
-
-            Assert.assertNotNull(gcResampled);
+        try (AutoCloseableResource resource =
+                        new AutoCloseableResource(resourceManager, resampled);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gcResampled = reader.read()) {
 
             Assert.assertEquals(
                     -1.457024062347863E7,
@@ -775,16 +856,80 @@ public class DownloadProcessTest extends WPSTestSupport {
                     7187128.139081598,
                     gcResampled.getEnvelope().getUpperCorner().getOrdinate(1),
                     DELTA);
+        }
+    }
 
-        } finally {
+    @Test
+    public void testDownloadRasterGeoPackage() throws Exception {
+        final WPSResourceManager resourceManager = getResourceManager();
 
-            if (gcResampled != null) {
-                CoverageCleanerCallback.disposeCoverage(gcResampled);
+        // Creates the new process for the download
+        DownloadProcess downloadProcess = createDefaultTestingDownloadProcess(resourceManager);
+
+        // Download the coverage as GeoPackage (Not reprojected)
+        RawData raster =
+                downloadProcess.execute(
+                        getLayerId(MockData.USA_WORLDIMG), // layerName
+                        null, // filter
+                        GeopkgPPIO.MIME_TYPE, // mimeType
+                        GeopkgPPIO.MIME_TYPE, // resultFormat
+                        null, // targetCRS
+                        WGS84, // roiCRS
+                        null, // roi
+                        true, // cropToGeometry
+                        null, // interpolation
+                        null, // targetSizeX
+                        null, // targetSizeY
+                        null, // bandSelectIndices
+                        null, // Writing params
+                        false,
+                        false,
+                        0d,
+                        null,
+                        new NullProgressListener() // progressListener
+                        );
+
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                GeoPackage gpkg = new GeoPackage(resource.getFile())) {
+
+            TileEntry entry = gpkg.tile(MockData.USA_WORLDIMG.getLocalPart());
+            assertNotNull(entry);
+            ReferencedEnvelope bounds = entry.getBounds();
+            CoverageInfo ci = getCatalog().getCoverageByName(getLayerId(MockData.USA_WORLDIMG));
+
+            // raster is not rescaled, should be the same
+            org.opengis.geometry.Envelope envelope = ci.getGridCoverage(null, null).getEnvelope();
+            assertEquals(envelope.getMinimum(0), bounds.getMinimum(0), 0d);
+            assertEquals(envelope.getMaximum(0), bounds.getMaximum(0), 0d);
+            assertEquals(envelope.getMinimum(1), bounds.getMinimum(1), 0d);
+            assertEquals(envelope.getMaximum(1), bounds.getMaximum(1), 0d);
+
+            // the tile bounds are larger than the bounds (tile is bigger)
+            assertTrue(entry.getTileMatrixSetBounds().contains(new Envelope2D(bounds)));
+
+            List<TileMatrix> matrices = entry.getTileMatricies();
+            assertEquals(1, matrices.size());
+            TileMatrix matrix = matrices.get(0);
+            assertEquals(0, (int) matrix.getZoomLevel());
+            assertEquals(256, (int) matrix.getTileWidth());
+            assertEquals(256, (int) matrix.getTileHeight());
+            assertEquals(1, (int) matrix.getMatrixWidth());
+            assertEquals(1, (int) matrix.getMatrixHeight());
+            assertEquals(0.070037, matrix.getXPixelSize(), EPS);
+            assertEquals(0.055868, matrix.getYPixelSize(), EPS);
+
+            try (TileReader reader = gpkg.reader(entry, 0, 0, 0, 0, 0, 0)) {
+                Tile tile = reader.next();
+                assertEquals(0, (int) tile.getRow());
+                assertEquals(0, (int) tile.getColumn());
+                assertEquals(0, (int) tile.getZoom());
+                byte[] data = tile.getData();
+                BufferedImage image = ImageIO.read(new ByteArrayInputStream(data));
+
+                // image should have been expanded to tile size
+                assertEquals(256, image.getWidth());
+                assertEquals(256, image.getHeight());
             }
-            if (reader != null) reader.dispose();
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -847,11 +992,12 @@ public class DownloadProcessTest extends WPSTestSupport {
         }
 
         // Download the coverage as tiff
-        File rasterZip =
+        RawData raster =
                 downloadProcess.execute(
                         getLayerId(MockData.USA_WORLDIMG), // layerName
                         null, // filter
                         "image/tiff", // outputFormat
+                        "image/tiff",
                         null, // targetCRS
                         WGS84, // roiCRS
                         roi, // roi
@@ -869,8 +1015,7 @@ public class DownloadProcessTest extends WPSTestSupport {
                         );
 
         // Final checks on the result
-        Assert.assertNotNull(rasterZip);
-        GeoTiffReader reader = null;
+        Assert.assertNotNull(raster);
 
         final Map<String, String> expectedTiffTagValues = new HashMap<>();
         expectedTiffTagValues.put(
@@ -888,11 +1033,9 @@ public class DownloadProcessTest extends WPSTestSupport {
             matchingStillRequired--;
         }
 
-        try {
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            Assert.assertNotNull(tiffFiles);
-            Assert.assertTrue(tiffFiles.length > 0);
-            reader = new GeoTiffReader(tiffFiles[0]);
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile())) {
             GeoTiffIIOMetadataDecoder metadata = reader.getMetadata();
             IIOMetadataNode rootNode = metadata.getRootNode();
 
@@ -933,14 +1076,6 @@ public class DownloadProcessTest extends WPSTestSupport {
                 }
             }
             Assert.assertEquals(0, matchingStillRequired);
-
-        } finally {
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -961,11 +1096,12 @@ public class DownloadProcessTest extends WPSTestSupport {
         ///////////////////////////////////////
 
         // Download the coverage as tiff
-        File rasterZip =
+        RawData raster =
                 downloadProcess.execute(
                         getLayerId(MockData.USA_WORLDIMG), // layerName
                         null, // filter
                         "image/tiff", // outputFormat
+                        "image/tiff",
                         null, // targetCRS
                         WGS84, // roiCRS
                         null, // roi
@@ -982,18 +1118,10 @@ public class DownloadProcessTest extends WPSTestSupport {
                         new NullProgressListener() // progressListener
                         );
 
-        // Final checks on the result
-        Assert.assertNotNull(rasterZip);
-        GeoTiffReader reader = null;
-        GridCoverage2D gc = null;
-        try {
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            Assert.assertNotNull(tiffFiles);
-            Assert.assertTrue(tiffFiles.length > 0);
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-
-            Assert.assertNotNull(gc);
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
 
             // check bands
             Assert.assertEquals(2, gc.getNumSampleDimensions());
@@ -1002,18 +1130,7 @@ public class DownloadProcessTest extends WPSTestSupport {
             Assert.assertEquals(0, CoverageUtilities.getVisibleBand(gc));
 
             // check non existing band index
-            Assert.assertNotEquals(3, gc.getNumSampleDimensions());
-
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
+            assertNotEquals(3, gc.getNumSampleDimensions());
         }
     }
 
@@ -1054,11 +1171,12 @@ public class DownloadProcessTest extends WPSTestSupport {
         roi.setSRID(4326);
 
         // Download the coverage as tiff
-        File rasterZip =
+        RawData raster =
                 downloadProcess.execute(
                         getLayerId(MockData.USA_WORLDIMG), // layerName
                         null, // filter
                         "image/tiff", // outputFormat
+                        "image/tiff",
                         null, // targetCRS
                         WGS84, // roiCRS
                         roi, // roi
@@ -1075,18 +1193,10 @@ public class DownloadProcessTest extends WPSTestSupport {
                         new NullProgressListener() // progressListener
                         );
 
-        // Final checks on the result
-        Assert.assertNotNull(rasterZip);
-        GeoTiffReader reader = null;
-        GridCoverage2D gc = null;
-        try {
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            Assert.assertNotNull(tiffFiles);
-            Assert.assertTrue(tiffFiles.length > 0);
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-
-            Assert.assertNotNull(gc);
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
 
             // check bands
             Assert.assertEquals(1, gc.getNumSampleDimensions());
@@ -1104,17 +1214,90 @@ public class DownloadProcessTest extends WPSTestSupport {
                     -124.05382943906582, gc.getEnvelope().getUpperCorner().getOrdinate(0), DELTA);
             Assert.assertEquals(
                     54.00577111704634, gc.getEnvelope().getUpperCorner().getOrdinate(1), DELTA);
+        }
+    }
 
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
+    @Test
+    public void testMaskedGeoPackageRasterDownload() throws Exception {
+        final WPSResourceManager resourceManager = getResourceManager();
+
+        // Creates the new process for the download
+        DownloadProcess downloadProcess = createDefaultTestingDownloadProcess(resourceManager);
+
+        // L shaped polygon covering top left, top right and bottom right quadrants (hand drew
+        // in QGIS)
+        Polygon roi =
+                (Polygon)
+                        new WKTReader2()
+                                .read(
+                                        "Polygon ((-131.15837491405085302 54.46008784574385686, -123.67994074117365244 54.40520025548421046, -123.61133125334909266 48.21662445370877492, -125.71078158078067588 48.2303463512736883, -125.99894142964383548 52.6762411623052671, -131.15837491405085302 52.82718203551930003, -131.15837491405085302 54.46008784574385686))");
+        roi.setSRID(4326);
+
+        // Download the coverage as tiff
+        RawData raster =
+                downloadProcess.execute(
+                        getLayerId(MockData.USA_WORLDIMG), // layerName
+                        null, // filter
+                        GeopkgRasterPPIO.MIME_TYPE, // outputFormat
+                        GeopkgRasterPPIO.MIME_TYPE,
+                        null, // targetCRS
+                        WGS84, // roiCRS
+                        roi, // roi
+                        true, // cropToGeometry
+                        null, // interpolation
+                        512, // targetSizeX (get at least 4 tiles)
+                        512, // targetSizeY
+                        new int[] {1}, // bandSelectIndices
+                        null, // Writing params
+                        false,
+                        false,
+                        0d,
+                        null,
+                        new NullProgressListener() // progressListener
+                        );
+
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                GeoPackage gpkg = new GeoPackage(resource.getFile())) {
+
+            TileEntry entry = gpkg.tile(MockData.USA_WORLDIMG.getLocalPart());
+            assertNotNull(entry);
+            ReferencedEnvelope bounds = entry.getBounds();
+
+            // the tile bounds are larger than the bounds (tile is bigger)
+            assertTrue(entry.getTileMatrixSetBounds().contains(new Envelope2D(bounds)));
+
+            List<TileMatrix> matrices = entry.getTileMatricies();
+            assertEquals(1, matrices.size());
+            TileMatrix matrix = matrices.get(0);
+            assertEquals(0, (int) matrix.getZoomLevel());
+            assertEquals(256, (int) matrix.getTileWidth());
+            assertEquals(256, (int) matrix.getTileHeight());
+            assertEquals(2, (int) matrix.getMatrixWidth());
+            assertEquals(2, (int) matrix.getMatrixHeight());
+            assertEquals(0.014713, matrix.getXPixelSize(), EPS);
+            assertEquals(0.012198, matrix.getYPixelSize(), EPS);
+
+            // collect all tiles and do minimal checks on them
+            Set<Point> tiles = new HashSet<>();
+            try (TileReader reader = gpkg.reader(entry, -1000, 1000, -1000, 1000, -1000, 1000)) {
+                while (reader.hasNext()) {
+                    Tile tile = reader.next();
+                    tiles.add(new Point(tile.getColumn(), tile.getRow()));
+                    assertEquals(0, (int) tile.getZoom());
+                    byte[] data = tile.getData();
+                    BufferedImage image = ImageIO.read(new ByteArrayInputStream(data));
+                    assertEquals(256, image.getWidth());
+                    assertEquals(256, image.getHeight());
+                    // gray + alpha, the alpha channel has been added to handle ROI
+                    assertEquals(2, image.getSampleModel().getNumBands());
+                }
             }
 
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
+            // the lower left corner tile is not covered by the ROI, should have been skipped
+            assertEquals(3, tiles.size());
+            assertThat(
+                    tiles,
+                    CoreMatchers.hasItems(new Point(0, 0), new Point(1, 0), new Point(1, 1)));
         }
     }
 
@@ -1134,11 +1317,12 @@ public class DownloadProcessTest extends WPSTestSupport {
         ///////////////////////////////////////
 
         // Download the coverage as tiff
-        File rasterZip =
+        RawData raster =
                 downloadProcess.execute(
                         getLayerId(MockData.USA_WORLDIMG), // layerName
                         null, // filter
                         "image/tiff", // outputFormat
+                        "image/tiff",
                         null, // targetCRS
                         WGS84, // roiCRS
                         null, // roi
@@ -1155,18 +1339,10 @@ public class DownloadProcessTest extends WPSTestSupport {
                         new NullProgressListener() // progressListener
                         );
 
-        // Final checks on the result
-        Assert.assertNotNull(rasterZip);
-        GeoTiffReader reader = null;
-        GridCoverage2D gc = null;
-        try {
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            Assert.assertNotNull(tiffFiles);
-            Assert.assertTrue(tiffFiles.length > 0);
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-
-            Assert.assertNotNull(gc);
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
 
             // check coverage size
             Rectangle2D originalGridRange = (GridEnvelope2D) reader.getOriginalGridRange();
@@ -1182,16 +1358,6 @@ public class DownloadProcessTest extends WPSTestSupport {
                     -123.8830077, gc.getEnvelope().getUpperCorner().getOrdinate(0), DELTA);
             Assert.assertEquals(
                     54.1420339, gc.getEnvelope().getUpperCorner().getOrdinate(1), DELTA);
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
 
         ///////////////////////////////////////
@@ -1199,19 +1365,20 @@ public class DownloadProcessTest extends WPSTestSupport {
         ///////////////////////////////////////
 
         // Download the coverage as tiff
-        File largerZip =
+        RawData largerDownload =
                 downloadProcess.execute(
                         getLayerId(MockData.USA_WORLDIMG), // layerName
                         null, // filter
                         "image/tiff", // outputFormat
+                        "image/tiff",
                         null, // targetCRS
                         WGS84, // roiCRS
                         null, // roi
                         false, // cropToGeometry
                         null, // interpolation
                         160, // targetSizeX
-                        null, // targetSizeY not specified, will be calculated based on targetSizeX
-                        // and aspect ratio of the original image
+                        null, // targetSizeY not specified, will be calculated based on
+                        // targetSizeX and aspect ratio of the original image
                         null, // bandSelectIndices
                         null, // Writing params
                         false,
@@ -1222,30 +1389,17 @@ public class DownloadProcessTest extends WPSTestSupport {
                         );
 
         // Final checks on the result
-        Assert.assertNotNull(largerZip);
-        try {
-            final File[] tiffFiles = extractFiles(largerZip, "GTIFF");
-            Assert.assertNotNull(tiffFiles);
-            Assert.assertTrue(tiffFiles.length > 0);
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-
-            Assert.assertNotNull(gc);
+        try (AutoCloseableResource resource =
+                        new AutoCloseableResource(resourceManager, largerDownload);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
+            assertNotNull(gc);
 
             // check coverage size
             Rectangle2D originalGridRange = (GridEnvelope2D) reader.getOriginalGridRange();
             Assert.assertEquals(160, Math.round(originalGridRange.getWidth()));
             Assert.assertEquals(160, Math.round(originalGridRange.getHeight()));
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
 
         //////////////////////////////////
@@ -1256,15 +1410,21 @@ public class DownloadProcessTest extends WPSTestSupport {
                 (Polygon)
                         new WKTReader2()
                                 .read(
-                                        "POLYGON (( -127.57473954542964 54.06575021619523, -130.88669845369998 52.00807146727025, -129.50812897394974 49.85372324691927, -130.5300633861675 49.20465679591609, -129.25955033314003 48.60392508062591, -128.00975216684665 50.986137055052474, -125.8623089087404 48.63154492960477, -123.984159178178 50.68231871628503, -126.91186316993704 52.15307567440926, -125.3444367403868 53.54787804784162, -127.57473954542964 54.06575021619523 ))");
+                                        "POLYGON (( -127.57473954542964 54.06575021619523, "
+                                                + "-130.88669845369998 52.00807146727025, -129.50812897394974 49.85372324691927, "
+                                                + "-130.5300633861675 49.20465679591609, -129.25955033314003 48.60392508062591, "
+                                                + "-128.00975216684665 50.986137055052474, -125.8623089087404 48.63154492960477, "
+                                                + "-123.984159178178 50.68231871628503, -126.91186316993704 52.15307567440926, "
+                                                + "-125.3444367403868 53.54787804784162, -127.57473954542964 54.06575021619523 ))");
         roi.setSRID(4326);
 
         // Download the coverage as tiff
-        File resampledZip =
+        RawData resampled =
                 downloadProcess.execute(
                         getLayerId(MockData.USA_WORLDIMG), // layerName
                         null, // filter
                         "image/tiff", // outputFormat
+                        "image/tiff",
                         null, // targetCRS
                         WGS84, // roiCRS
                         roi, // roi
@@ -1281,16 +1441,11 @@ public class DownloadProcessTest extends WPSTestSupport {
                         new NullProgressListener() // progressListener
                         );
 
-        // Final checks on the result
-        Assert.assertNotNull(resampledZip);
-        try {
-            final File[] tiffFiles = extractFiles(resampledZip, "GTIFF");
-            Assert.assertNotNull(tiffFiles);
-            Assert.assertTrue(tiffFiles.length > 0);
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-
-            Assert.assertNotNull(gc);
+        try (AutoCloseableResource resource =
+                        new AutoCloseableResource(resourceManager, resampled);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
 
             // check coverage size
             Rectangle2D originalGridRange = (GridEnvelope2D) reader.getOriginalGridRange();
@@ -1306,16 +1461,6 @@ public class DownloadProcessTest extends WPSTestSupport {
                     -123.95304462109999, gc.getEnvelope().getUpperCorner().getOrdinate(0), DELTA);
             Assert.assertEquals(
                     54.0861661371, gc.getEnvelope().getUpperCorner().getOrdinate(1), DELTA);
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -1333,11 +1478,12 @@ public class DownloadProcessTest extends WPSTestSupport {
         DownloadProcess downloadProcess = createDefaultTestingDownloadProcess(resourceManager);
 
         // Download the coverage as tiff
-        File rasterZip =
+        RawData raster =
                 downloadProcess.execute(
                         getLayerId(SHORT), // layerName
                         null, // filter
                         "image/tiff", // outputFormat
+                        "image/tiff",
                         null, // targetCRS
                         WGS84, // roiCRS
                         null, // roi
@@ -1356,15 +1502,10 @@ public class DownloadProcessTest extends WPSTestSupport {
 
         // Final checks on the result. This test only focus on checking that the
         // datatype get preserved
-        Assert.assertNotNull(rasterZip);
-        GeoTiffReader reader = null;
-        GridCoverage2D gc = null;
-        try {
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-
-            Assert.assertNotNull(gc);
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
 
             // check coverage size
             Rectangle2D originalGridRange = (GridEnvelope2D) reader.getOriginalGridRange();
@@ -1374,24 +1515,14 @@ public class DownloadProcessTest extends WPSTestSupport {
             // This JUNIT test only focus on checking that the datatype get preserved
             Assert.assertEquals(
                     DataBuffer.TYPE_SHORT, gc.getRenderedImage().getSampleModel().getDataType());
-
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
 
-        rasterZip =
+        raster =
                 downloadProcess.execute(
                         getLayerId(FLOAT), // layerName
                         null, // filter
                         "image/tiff", // outputFormat
+                        "image/tiff",
                         null, // targetCRS
                         WGS84, // roiCRS
                         null, // roi
@@ -1408,27 +1539,14 @@ public class DownloadProcessTest extends WPSTestSupport {
                         new NullProgressListener() // progressListener
                         );
 
-        Assert.assertNotNull(rasterZip);
-        try {
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-            Assert.assertNotNull(gc);
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
 
             // This JUNIT test only focus on checking that the datatype get preserved
             Assert.assertEquals(
                     DataBuffer.TYPE_FLOAT, gc.getRenderedImage().getSampleModel().getDataType());
-
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -1455,55 +1573,44 @@ public class DownloadProcessTest extends WPSTestSupport {
         // ---+---
         //    | /
         //    |/
-        GeoTiffReader reader = null;
-        GridCoverage2D gc = null;
+
         CoordinateReferenceSystem targetCRS = CRS.decode("EPSG:32632", true);
-        try {
-            String roiWkt =
-                    "POLYGON((180000 600000, 820000 600000, 820000 1200000, 180000 1200000, 180000 600000))";
-            Polygon bboxRoi = (Polygon) new WKTReader2().read(roiWkt);
 
-            Parameters parameters = new Parameters();
-            List<Parameter> parametersList = parameters.getParameters();
-            parametersList.add(new Parameter("writenodata", "false"));
-            File rasterZip =
-                    downloadProcess.execute(
-                            getLayerId(HETEROGENEOUS_CRS), // layerName
-                            null, // filter
-                            "image/tiff", // outputFormat
-                            targetCRS, // targetCRS
-                            targetCRS,
-                            bboxRoi, // roi
-                            false, // cropToGeometry
-                            null, // interpolation
-                            200, // targetSizeX
-                            200, // targetSizeY
-                            null, // bandSelectIndices
-                            parameters, // Writing params
-                            true,
-                            false,
-                            0d,
-                            null,
-                            new NullProgressListener() // progressListener
-                            );
+        String roiWkt =
+                "POLYGON((180000 600000, 820000 600000, 820000 1200000, 180000 1200000, "
+                        + "180000 600000))";
+        Polygon bboxRoi = (Polygon) new WKTReader2().read(roiWkt);
 
-            Assert.assertNotNull(rasterZip);
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-            Assert.assertNotNull(gc);
+        Parameters parameters = new Parameters();
+        List<Parameter> parametersList = parameters.getParameters();
+        parametersList.add(new Parameter("writenodata", "false"));
+        RawData raster =
+                downloadProcess.execute(
+                        getLayerId(HETEROGENEOUS_CRS), // layerName
+                        null, // filter
+                        "image/tiff", // outputFormat
+                        "image/tiff",
+                        targetCRS, // targetCRS
+                        targetCRS,
+                        bboxRoi, // roi
+                        false, // cropToGeometry
+                        null, // interpolation
+                        200, // targetSizeX
+                        200, // targetSizeY
+                        null, // bandSelectIndices
+                        parameters, // Writing params
+                        true,
+                        false,
+                        0d,
+                        null,
+                        new NullProgressListener() // progressListener
+                        );
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
+
             assertTrue(hasPerfectStraightHorizontalLine(gc.getRenderedImage()));
-
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -1531,32 +1638,29 @@ public class DownloadProcessTest extends WPSTestSupport {
         //    | /
         //    |/
         final File file = new File(this.getTestData().getDataDirectoryRoot(), "hcrs/green.tif");
-        GeoTiffReader referenceReader = null;
-        GeoTiffReader reader = null;
-        GridCoverage2D referenceGc = null;
-        GridCoverage2D gc = null;
-        RenderedImage referenceImage = null;
+        RenderedImage referenceImage;
         CoordinateReferenceSystem targetCRS = CRS.decode("EPSG:32632", true);
-        try {
-            referenceReader = new GeoTiffReader(file);
-            referenceGc = referenceReader.read(null);
+        try (AutoDisposableGeoTiffReader referenceReader = new AutoDisposableGeoTiffReader(file);
+                AutoDisposableGridCoverage2D referenceGc = referenceReader.read()) {
             referenceImage = referenceGc.getRenderedImage();
             // Setting filter to get the granule with resolution
             final PropertyName property = FF.property("location");
             Filter filter = (Filter) FF.like(property, "green.tif");
 
             String roiWkt =
-                    "POLYGON((160000 600000, 840000 600000, 840000 1200000, 160000 1200000, 160000 600000))";
+                    "POLYGON((160000 600000, 840000 600000, 840000 1200000, 160000 1200000,"
+                            + " 160000 600000))";
             Polygon bboxRoi = (Polygon) new WKTReader2().read(roiWkt);
 
             Parameters parameters = new Parameters();
             List<Parameter> parametersList = parameters.getParameters();
             parametersList.add(new Parameter("writenodata", "false"));
-            File rasterZip =
+            RawData raster =
                     downloadProcess.execute(
                             getLayerId(HETEROGENEOUS_CRS), // layerName
                             filter, // filter
                             "image/tiff", // outputFormat
+                            "image/tiff",
                             targetCRS, // targetCRS
                             targetCRS,
                             bboxRoi, // roi
@@ -1573,36 +1677,21 @@ public class DownloadProcessTest extends WPSTestSupport {
                             new NullProgressListener() // progressListener
                             );
 
-            Assert.assertNotNull(rasterZip);
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-            Assert.assertNotNull(gc);
+            try (AutoCloseableResource resource =
+                            new AutoCloseableResource(resourceManager, raster);
+                    AutoDisposableGeoTiffReader reader =
+                            new AutoDisposableGeoTiffReader(resource.getFile());
+                    AutoDisposableGridCoverage2D gc = reader.read()) {
 
-            // Compare the downloaded raster with the original tiff.
-            // If reprojection to common CRS would have been involved,
-            // the above tie-bow pattern would have been distorted, making
-            // this comparison fail
-            ImageAssert.assertEquals(referenceImage, gc.getRenderedImage(), 5);
+                // Compare the downloaded raster with the original tiff.
+                // If reprojection to common CRS would have been involved,
+                // the above tie-bow pattern would have been distorted, making
+                // this comparison fail
+                ImageAssert.assertEquals(referenceImage, gc.getRenderedImage(), 5);
 
-            // also make sure the referencing is the same
-            assertEquals(referenceGc.getEnvelope2D(), gc.getEnvelope2D());
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
+                // also make sure the referencing is the same
+                assertEquals(referenceGc.getEnvelope2D(), gc.getEnvelope2D());
             }
-            if (reader != null) {
-                reader.dispose();
-            }
-            if (referenceGc != null) {
-                CoverageCleanerCallback.disposeCoverage(referenceGc);
-            }
-            if (referenceReader != null) {
-                referenceReader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -1631,31 +1720,27 @@ public class DownloadProcessTest extends WPSTestSupport {
         // xxxxxxx
         // xxxxxxx
         final File file = new File(this.getTestData().getDataDirectoryRoot(), "hcrs/red.tif");
-        GeoTiffReader referenceReader = null;
-        GeoTiffReader reader = null;
-        GridCoverage2D referenceGc = null;
-        GridCoverage2D gc = null;
+
         CoordinateReferenceSystem targetCRS = CRS.decode("EPSG:32631", true);
-        try {
-            // tests go out of the stricly sane area for one of the UTMs, could cause 0.006 meters
-            // of error and that makes the assertions fail..-
-            MapProjection.SKIP_SANITY_CHECKS = true;
-
-            referenceReader = new GeoTiffReader(file);
-            referenceGc = referenceReader.read(null);
-
+        MapProjection.SKIP_SANITY_CHECKS = true;
+        try (AutoDisposableGeoTiffReader referenceReader = new AutoDisposableGeoTiffReader(file);
+                AutoDisposableGridCoverage2D referenceGc = referenceReader.read()) {
+            // tests go out of the stricly sane area for one of the UTMs, could cause 0.006
+            // meters of error and that makes the assertions fail..-
             String roiWkt =
-                    "POLYGON((150000 550000, 2300000 550000, 2300000 1300000, 160000 1300000, 150000 550000))";
+                    "POLYGON((150000 550000, 2300000 550000, 2300000 1300000, 160000 1300000,"
+                            + " 150000 550000))";
             Polygon bboxRoi = (Polygon) new WKTReader2().read(roiWkt);
 
             Parameters parameters = new Parameters();
             List<Parameter> parametersList = parameters.getParameters();
             parametersList.add(new Parameter("writenodata", "false"));
-            File rasterZip =
+            RawData raster =
                     downloadProcess.execute(
                             getLayerId(HETEROGENEOUS_CRS), // layerName
                             null, // filter
                             "image/tiff", // outputFormat
+                            "image/tiff",
                             targetCRS, // targetCRS
                             targetCRS,
                             bboxRoi, // roi
@@ -1671,44 +1756,29 @@ public class DownloadProcessTest extends WPSTestSupport {
                             null,
                             new NullProgressListener() // progressListener
                             );
+            try (AutoCloseableResource resource =
+                            new AutoCloseableResource(resourceManager, raster);
+                    AutoDisposableGeoTiffReader reader =
+                            new AutoDisposableGeoTiffReader(resource.getFile());
+                    AutoDisposableGridCoverage2D gc = reader.read()) {
 
-            Assert.assertNotNull(rasterZip);
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-            Assert.assertNotNull(gc);
+                // check we get the expected referencing and resolution out
+                MathTransform2D mt = gc.getGridGeometry().getGridToCRS2D();
+                assertThat(mt, CoreMatchers.instanceOf(AffineTransform2D.class));
+                AffineTransform2D at = (AffineTransform2D) mt;
+                assertEquals(1000, at.getScaleX(), 0);
+                assertEquals(-1000, at.getScaleY(), 0);
 
-            // check we get the expected referencing and resolution out
-            MathTransform2D mt = gc.getGridGeometry().getGridToCRS2D();
-            assertThat(mt, CoreMatchers.instanceOf(AffineTransform2D.class));
-            AffineTransform2D at = (AffineTransform2D) mt;
-            assertEquals(1000, at.getScaleX(), 0);
-            assertEquals(-1000, at.getScaleY(), 0);
-
-            // the red  one defines left-most location, but the green one lower corner reprojected
-            // is just a smidge below 600000, bringing the alignment of output down to 599000
-            Envelope2D gcEnvelope = gc.getEnvelope2D();
-            assertEquals(160000, gcEnvelope.getMinimum(0), 0);
-            assertEquals(599000, gcEnvelope.getMinimum(1), 0);
+                // the red one defines left-most location, but the green one lower corner
+                // reprojected is just a smidge below 600000, bringing the alignment of
+                // output down to 599000
+                Envelope2D gcEnvelope = gc.getEnvelope2D();
+                assertEquals(160000, gcEnvelope.getMinimum(0), 0);
+                assertEquals(599000, gcEnvelope.getMinimum(1), 0);
+            }
         } finally {
             // re-enable checks
             MapProjection.SKIP_SANITY_CHECKS = false;
-
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-            if (referenceGc != null) {
-                CoverageCleanerCallback.disposeCoverage(referenceGc);
-            }
-            if (referenceReader != null) {
-                referenceReader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -1724,32 +1794,35 @@ public class DownloadProcessTest extends WPSTestSupport {
         final WPSResourceManager resourceManager = getResourceManager();
         // Creates the new process for the download
         DownloadProcess downloadProcess = createDefaultTestingDownloadProcess(resourceManager);
-        GeoTiffReader referenceReader = null;
-        GeoTiffReader reader = null;
-        GridCoverage2D referenceGc = null;
-        GridCoverage2D gc = null;
         RenderedImage referenceImage = null;
         // Note we are asking targetCRS = 32632 but the available granule will be in 32633
         CoordinateReferenceSystem targetCRS = CRS.decode("EPSG:32632", true);
         CoordinateReferenceSystem roiCRS = CRS.decode("EPSG:32633", true);
-        try {
+
+        // The original sample image has a straight
+        // white stripe in the middle of a blue fill.
+        final File file = new File(this.getTestData().getDataDirectoryRoot(), "hcrs/blue.tif");
+        try (AutoDisposableGeoTiffReader referenceReader = new AutoDisposableGeoTiffReader(file);
+                AutoDisposableGridCoverage2D referenceGc = referenceReader.read()) {
 
             // Setting filter to get the granule
             final PropertyName property = FF.property("location");
             Filter filter = (Filter) FF.like(property, "blue.tif");
 
             String roiWkt =
-                    "POLYGON((180000 600000, 820000 600000, 820000 1200000, 180000 1200000, 180000 600000))";
+                    "POLYGON((180000 600000, 820000 600000, 820000 1200000, 180000 1200000,"
+                            + " 180000 600000))";
             Polygon bboxRoi = (Polygon) new WKTReader2().read(roiWkt);
 
             Parameters parameters = new Parameters();
             List<Parameter> parametersList = parameters.getParameters();
             parametersList.add(new Parameter("writenodata", "false"));
-            File rasterZip =
+            RawData raster =
                     downloadProcess.execute(
                             getLayerId(HETEROGENEOUS_CRS), // layerName
                             filter, // filter
                             "image/tiff", // outputFormat
+                            "image/tiff",
                             targetCRS, // targetCRS
                             roiCRS,
                             bboxRoi, // roi
@@ -1766,48 +1839,28 @@ public class DownloadProcessTest extends WPSTestSupport {
                             new NullProgressListener() // progressListener
                             );
 
-            Assert.assertNotNull(rasterZip);
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-            Assert.assertNotNull(gc);
-            AffineTransform gridToWorld = (AffineTransform) gc.getGridGeometry().getGridToCRS();
-            double scaleX = XAffineTransform.getScaleX0(gridToWorld);
-            double scaleY = XAffineTransform.getScaleY0(gridToWorld);
-            // Once the file has been downloaded we can't retrieve the processing chain
-            // Let's just check if the resolution isn't the native one
-            assertNotEquals(1000, scaleX, 10);
-            assertNotEquals(1000, scaleY, 10);
+            try (AutoCloseableResource resource =
+                            new AutoCloseableResource(resourceManager, raster);
+                    AutoDisposableGeoTiffReader reader =
+                            new AutoDisposableGeoTiffReader(resource.getFile());
+                    AutoDisposableGridCoverage2D gc = reader.read()) {
 
-            // Finally, the original sample image has a straight
-            // white stripe in the middle of a blue fill.
-            final File file = new File(this.getTestData().getDataDirectoryRoot(), "hcrs/blue.tif");
-            referenceReader = new GeoTiffReader(file);
-            referenceGc = referenceReader.read(null);
-            referenceImage = referenceGc.getRenderedImage();
-            assertTrue(hasPerfectStraightHorizontalLine(referenceImage));
+                AffineTransform gridToWorld = (AffineTransform) gc.getGridGeometry().getGridToCRS();
+                double scaleX = XAffineTransform.getScaleX0(gridToWorld);
+                double scaleY = XAffineTransform.getScaleY0(gridToWorld);
+                // Once the file has been downloaded we can't retrieve the processing chain
+                // Let's just check if the resolution isn't the native one
+                assertNotEquals(1000, scaleX, 10);
+                assertNotEquals(1000, scaleY, 10);
 
-            // Let's extract a stripe from the center of the downloaded image
-            // A reprojection will spot a not perfectly straight line
-            RenderedImage ri = gc.getRenderedImage();
-            assertFalse(hasPerfectStraightHorizontalLine(ri));
+                referenceImage = referenceGc.getRenderedImage();
+                assertTrue(hasPerfectStraightHorizontalLine(referenceImage));
 
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
+                // Let's extract a stripe from the center of the downloaded image
+                // A reprojection will spot a not perfectly straight line
+                RenderedImage ri = gc.getRenderedImage();
+                assertFalse(hasPerfectStraightHorizontalLine(ri));
             }
-            if (reader != null) {
-                reader.dispose();
-            }
-            if (referenceGc != null) {
-                CoverageCleanerCallback.disposeCoverage(referenceGc);
-            }
-            if (referenceReader != null) {
-                referenceReader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -1827,24 +1880,27 @@ public class DownloadProcessTest extends WPSTestSupport {
         DownloadProcess downloadProcess = createDefaultTestingDownloadProcess(resourceManager);
 
         // Requesting an area containing a granule in native CRS and a granule in a different CRS
-        GeoTiffReader referenceReader = null;
-        GeoTiffReader reader = null;
-        GridCoverage2D referenceGc = null;
-        GridCoverage2D gc = null;
         CoordinateReferenceSystem targetCRS = CRS.decode("EPSG:31256", true);
-        try {
+
+        // Finally, get the original granule in that target CRS
+        final File file = new File(this.getTestData().getDataDirectoryRoot(), "hcrs2/31256.tif");
+
+        try (AutoDisposableGeoTiffReader referenceReader = new AutoDisposableGeoTiffReader(file);
+                AutoDisposableGridCoverage2D referenceGc = referenceReader.read()) {
             String roiWkt =
-                    "POLYGON ((-102583.25 262175.25, -102332.25 262175.25, -102332.25 262042.25, -102583.25 262042.25, -102583.25 262175.25))";
+                    "POLYGON ((-102583.25 262175.25, -102332.25 262175.25, -102332.25 "
+                            + " 262042.25, -102583.25 262042.25, -102583.25 262175.25))";
             Polygon bboxRoi = (Polygon) new WKTReader2().read(roiWkt);
 
             Parameters parameters = new Parameters();
             List<Parameter> parametersList = parameters.getParameters();
             parametersList.add(new Parameter("writenodata", "false"));
-            File rasterZip =
+            RawData raster =
                     downloadProcess.execute(
                             getLayerId(HETEROGENEOUS_CRS2), // layerName
                             null, // filter
                             "image/tiff", // outputFormat
+                            "image/tiff",
                             targetCRS, // targetCRS
                             targetCRS,
                             bboxRoi, // roi
@@ -1861,52 +1917,33 @@ public class DownloadProcessTest extends WPSTestSupport {
                             new NullProgressListener() // progressListener
                             );
 
-            Assert.assertNotNull(rasterZip);
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-            GridGeometry2D gc2d = gc.getGridGeometry();
-            AffineTransform transform = (AffineTransform) gc2d.getGridToCRS();
+            try (AutoCloseableResource resource =
+                            new AutoCloseableResource(resourceManager, raster);
+                    AutoDisposableGeoTiffReader reader =
+                            new AutoDisposableGeoTiffReader(resource.getFile());
+                    AutoDisposableGridCoverage2D gc = reader.read()) {
 
-            // Finally, get the original granule in that target CRS
-            final File file =
-                    new File(this.getTestData().getDataDirectoryRoot(), "hcrs2/31256.tif");
-            referenceReader = new GeoTiffReader(file);
-            referenceGc = referenceReader.read(null);
-            GridGeometry2D referenceGc2d = referenceGc.getGridGeometry();
-            AffineTransform referenceTransform = (AffineTransform) referenceGc2d.getGridToCRS();
+                GridGeometry2D gc2d = gc.getGridGeometry();
+                AffineTransform transform = (AffineTransform) gc2d.getGridToCRS();
+                GridGeometry2D referenceGc2d = referenceGc.getGridGeometry();
+                AffineTransform referenceTransform = (AffineTransform) referenceGc2d.getGridToCRS();
 
-            // Check that even when requesting an area overlapping 2 different CRS we are getting
-            // the native resolution
-            double resX = XAffineTransform.getScaleX0(referenceTransform);
-            double resY = XAffineTransform.getScaleY0(referenceTransform);
-            assertEquals(resX, XAffineTransform.getScaleX0(transform), DELTA);
-            assertEquals(resY, XAffineTransform.getScaleY0(transform), DELTA);
+                // Check that even when requesting an area overlapping 2 different CRS we are
+                // getting the native resolution
+                double resX = XAffineTransform.getScaleX0(referenceTransform);
+                double resY = XAffineTransform.getScaleY0(referenceTransform);
+                assertEquals(resX, XAffineTransform.getScaleX0(transform), DELTA);
+                assertEquals(resY, XAffineTransform.getScaleY0(transform), DELTA);
 
-            // Check proper alignment
-            double[] referenceLowerCorner =
-                    referenceGc.getEnvelope2D().getLowerCorner().getCoordinate();
-            double[] lowerCorner = gc.getEnvelope2D().getLowerCorner().getCoordinate();
-            double xPixels = Math.abs(referenceLowerCorner[0] - lowerCorner[0]) / resX;
-            double yPixels = Math.abs(referenceLowerCorner[1] - lowerCorner[1]) / resY;
-            assertTrue(Math.abs(xPixels - Math.round(xPixels)) < DELTA);
-            assertTrue(Math.abs(yPixels - Math.round(yPixels)) < DELTA);
-
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
+                // Check proper alignment
+                double[] referenceLowerCorner =
+                        referenceGc.getEnvelope2D().getLowerCorner().getCoordinate();
+                double[] lowerCorner = gc.getEnvelope2D().getLowerCorner().getCoordinate();
+                double xPixels = Math.abs(referenceLowerCorner[0] - lowerCorner[0]) / resX;
+                double yPixels = Math.abs(referenceLowerCorner[1] - lowerCorner[1]) / resY;
+                assertTrue(Math.abs(xPixels - Math.round(xPixels)) < DELTA);
+                assertTrue(Math.abs(yPixels - Math.round(yPixels)) < DELTA);
             }
-            if (reader != null) {
-                reader.dispose();
-            }
-            if (referenceGc != null) {
-                CoverageCleanerCallback.disposeCoverage(referenceGc);
-            }
-            if (referenceReader != null) {
-                referenceReader.dispose();
-            }
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -1919,25 +1956,27 @@ public class DownloadProcessTest extends WPSTestSupport {
         // Creates the new process for the download
         DownloadProcess downloadProcess = createDefaultTestingDownloadProcess(resourceManager);
 
-        // Requesting an area containing a granule in native CRS and a granule in a different CRS
-        GeoTiffReader referenceReader = null;
-        GeoTiffReader reader = null;
-        GridCoverage2D referenceGc = null;
-        GridCoverage2D gc = null;
+        // Requesting an area containing a granule in native CRS
+        // and a granule in a different CRS
         CoordinateReferenceSystem targetCRS = CRS.decode("EPSG:31256", true);
-        try {
+
+        final File file = new File(this.getTestData().getDataDirectoryRoot(), "hcrs2/31255.tif");
+        try (AutoDisposableGeoTiffReader referenceReader = new AutoDisposableGeoTiffReader(file);
+                AutoDisposableGridCoverage2D referenceGc = referenceReader.read()) {
             String roiWkt =
-                    "POLYGON ((-102583.25 262175.25, -102332.25 262175.25, -102332.25 262042.25, -102583.25 262042.25, -102583.25 262175.25))";
+                    "POLYGON ((-102583.25 262175.25, -102332.25 262175.25, -102332.25"
+                            + " 262042.25, -102583.25 262042.25, -102583.25 262175.25))";
             Polygon bboxRoi = (Polygon) new WKTReader2().read(roiWkt);
 
             Parameters parameters = new Parameters();
             List<Parameter> parametersList = parameters.getParameters();
             parametersList.add(new Parameter("writenodata", "false"));
-            File rasterZip =
+            RawData raster =
                     downloadProcess.execute(
                             getLayerId(HETEROGENEOUS_CRS2), // layerName
                             null, // filter
                             "image/tiff", // outputFormat
+                            "image/tiff",
                             targetCRS, // targetCRS
                             targetCRS,
                             bboxRoi, // roi
@@ -1954,42 +1993,25 @@ public class DownloadProcessTest extends WPSTestSupport {
                             new NullProgressListener() // progressListener
                             );
 
-            Assert.assertNotNull(rasterZip);
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-            GridGeometry2D gc2d = gc.getGridGeometry();
-            AffineTransform transform = (AffineTransform) gc2d.getGridToCRS();
+            try (AutoCloseableResource resource =
+                            new AutoCloseableResource(resourceManager, raster);
+                    AutoDisposableGeoTiffReader reader =
+                            new AutoDisposableGeoTiffReader(resource.getFile());
+                    AutoDisposableGridCoverage2D gc = reader.read()) {
 
-            // Finally, get the original granule
-            final File file =
-                    new File(this.getTestData().getDataDirectoryRoot(), "hcrs2/31255.tif");
-            referenceReader = new GeoTiffReader(file);
-            referenceGc = referenceReader.read(null);
-            GridGeometry2D referenceGc2d = referenceGc.getGridGeometry();
-            AffineTransform referenceTransform = (AffineTransform) referenceGc2d.getGridToCRS();
+                GridGeometry2D gc2d = gc.getGridGeometry();
+                AffineTransform transform = (AffineTransform) gc2d.getGridToCRS();
 
-            // Checking that resolutions are equal
-            double resX = XAffineTransform.getScaleX0(referenceTransform);
-            double resY = XAffineTransform.getScaleY0(referenceTransform);
-            assertEquals(resX, XAffineTransform.getScaleX0(transform), 0d);
-            assertEquals(resY, XAffineTransform.getScaleY0(transform), 0d);
+                // Finally, get the original granule
+                GridGeometry2D referenceGc2d = referenceGc.getGridGeometry();
+                AffineTransform referenceTransform = (AffineTransform) referenceGc2d.getGridToCRS();
 
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
+                // Checking that resolutions are equal
+                double resX = XAffineTransform.getScaleX0(referenceTransform);
+                double resY = XAffineTransform.getScaleY0(referenceTransform);
+                assertEquals(resX, XAffineTransform.getScaleX0(transform), 0d);
+                assertEquals(resY, XAffineTransform.getScaleY0(transform), 0d);
             }
-            if (reader != null) {
-                reader.dispose();
-            }
-            if (referenceGc != null) {
-                CoverageCleanerCallback.disposeCoverage(referenceGc);
-            }
-            if (referenceReader != null) {
-                referenceReader.dispose();
-            }
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -2005,24 +2027,25 @@ public class DownloadProcessTest extends WPSTestSupport {
         DownloadProcess downloadProcess = createDefaultTestingDownloadProcess(resourceManager);
 
         // Requesting an area containing a granule in native CRS and a granule in a different CRS
-        GeoTiffReader referenceReader = null;
-        GeoTiffReader reader = null;
-        GridCoverage2D referenceGc = null;
-        GridCoverage2D gc = null;
         CoordinateReferenceSystem targetCRS = CRS.decode("EPSG:31256", true);
-        try {
+        final File file = new File(this.getTestData().getDataDirectoryRoot(), "hcrs2/31255.tif");
+
+        try (AutoDisposableGeoTiffReader referenceReader = new AutoDisposableGeoTiffReader(file);
+                AutoDisposableGridCoverage2D referenceGc = referenceReader.read()) {
             String roiWkt =
-                    "POLYGON ((-102583.25 262175.25, -102332.25 262175.25, -102332.25 262042.25, -102583.25 262042.25, -102583.25 262175.25))";
+                    "POLYGON ((-102583.25 262175.25, -102332.25 262175.25, -102332.25"
+                            + " 262042.25, -102583.25 262042.25, -102583.25 262175.25))";
             Polygon bboxRoi = (Polygon) new WKTReader2().read(roiWkt);
 
             Parameters parameters = new Parameters();
             List<Parameter> parametersList = parameters.getParameters();
             parametersList.add(new Parameter("writenodata", "false"));
-            File rasterZip =
+            RawData raster =
                     downloadProcess.execute(
                             getLayerId(HETEROGENEOUS_CRS2), // layerName
                             null, // filter
                             "image/tiff", // outputFormat
+                            "image/tiff",
                             targetCRS, // targetCRS
                             targetCRS,
                             bboxRoi, // roi
@@ -2039,42 +2062,25 @@ public class DownloadProcessTest extends WPSTestSupport {
                             new NullProgressListener() // progressListener
                             );
 
-            Assert.assertNotNull(rasterZip);
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-            GridGeometry2D gc2d = gc.getGridGeometry();
-            AffineTransform transform = (AffineTransform) gc2d.getGridToCRS();
+            try (AutoCloseableResource resource =
+                            new AutoCloseableResource(resourceManager, raster);
+                    AutoDisposableGeoTiffReader reader =
+                            new AutoDisposableGeoTiffReader(resource.getFile());
+                    AutoDisposableGridCoverage2D gc = reader.read()) {
 
-            // Finally, get the original granule
-            final File file =
-                    new File(this.getTestData().getDataDirectoryRoot(), "hcrs2/31255.tif");
-            referenceReader = new GeoTiffReader(file);
-            referenceGc = referenceReader.read(null);
-            GridGeometry2D referenceGc2d = referenceGc.getGridGeometry();
-            AffineTransform referenceTransform = (AffineTransform) referenceGc2d.getGridToCRS();
+                GridGeometry2D gc2d = gc.getGridGeometry();
+                AffineTransform transform = (AffineTransform) gc2d.getGridToCRS();
 
-            // Checking that resolutions are equal
-            double resX = XAffineTransform.getScaleX0(referenceTransform);
-            double resY = XAffineTransform.getScaleY0(referenceTransform);
-            assertEquals(resX, XAffineTransform.getScaleX0(transform), 0d);
-            assertEquals(resY, XAffineTransform.getScaleY0(transform), 0d);
+                // Finally, get the original granule
+                GridGeometry2D referenceGc2d = referenceGc.getGridGeometry();
+                AffineTransform referenceTransform = (AffineTransform) referenceGc2d.getGridToCRS();
 
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
+                // Checking that resolutions are equal
+                double resX = XAffineTransform.getScaleX0(referenceTransform);
+                double resY = XAffineTransform.getScaleY0(referenceTransform);
+                assertEquals(resX, XAffineTransform.getScaleX0(transform), 0d);
+                assertEquals(resY, XAffineTransform.getScaleY0(transform), 0d);
             }
-            if (reader != null) {
-                reader.dispose();
-            }
-            if (referenceGc != null) {
-                CoverageCleanerCallback.disposeCoverage(referenceGc);
-            }
-            if (referenceReader != null) {
-                referenceReader.dispose();
-            }
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -2141,42 +2147,32 @@ public class DownloadProcessTest extends WPSTestSupport {
         Polygon roi = JTS.toGeometry(env);
 
         // Download the data with ROI
-        File rasterZip =
-                downloadProcess.execute(
-                        getLayerId(MockData.USA_WORLDIMG), // layerName
-                        null, // filter
-                        "image/tiff", // outputFormat
-                        null, // targetCRS
-                        CRS.decode("EPSG:4326"), // roiCRS
-                        roi, // roi
-                        true, // cropToGeometry
-                        null, // interpolation
-                        null, // targetSizeX
-                        null, // targetSizeY
-                        null, // bandSelectIndices
-                        null, // Writing params
-                        false,
-                        false,
-                        0d,
-                        null,
-                        new NullProgressListener() // progressListener
-                        );
+        RawData raster =
+                executeVectorDownload(
+                        downloadProcess,
+                        MockData.USA_WORLDIMG,
+                        "image/tiff",
+                        "image/tiff",
+                        "EPSG:4326",
+                        roi,
+                        true);
 
         // Final checks on the result
-        Assert.assertNotNull(rasterZip);
+        Assert.assertNotNull(raster);
 
         // make sure we create files locally so that we don't clog the sytem temp
         final File currentDirectory = new File(DownloadProcessTest.class.getResource(".").toURI());
         File tempZipFile = File.createTempFile("zipppiotemp", ".zip", currentDirectory);
-        ppio.encode(rasterZip, new FileOutputStream(tempZipFile));
-
-        Assert.assertTrue(tempZipFile.length() > 0);
-
-        final File tempDir = new File(currentDirectory, Long.toString(System.nanoTime()));
-        Assert.assertTrue(tempDir.mkdir());
-        File tempFile = decode(new FileInputStream(tempZipFile), tempDir);
-        Assert.assertNotNull(tempFile);
-        IOUtils.delete(tempFile);
+        try (AutoCloseableResource resource =
+                new AutoCloseableResource(getResourceManager(), raster)) {
+            ppio.encode(resource.getFile(), new FileOutputStream(tempZipFile));
+            Assert.assertTrue(tempZipFile.length() > 0);
+            final File tempDir = new File(currentDirectory, Long.toString(System.nanoTime()));
+            Assert.assertTrue(tempDir.mkdir());
+            File tempFile = decode(new FileInputStream(tempZipFile), tempDir);
+            Assert.assertNotNull(tempFile);
+            IOUtils.delete(tempFile);
+        }
     }
 
     /**
@@ -2208,7 +2204,12 @@ public class DownloadProcessTest extends WPSTestSupport {
                 (Polygon)
                         new WKTReader2()
                                 .read(
-                                        "POLYGON (( -127.57473954542964 54.06575021619523, -130.8545966116691 52.00807146727025, -129.50812897394974 49.85372324691927, -130.5300633861675 49.20465679591609, -129.25955033314003 48.60392508062591, -128.00975216684665 50.986137055052474, -125.8623089087404 48.63154492960477, -123.984159178178 50.68231871628503, -126.91186316993704 52.15307567440926, -125.3444367403868 53.54787804784162, -127.57473954542964 54.06575021619523 ))");
+                                        "POLYGON (( -127.57473954542964 54.06575021619523,"
+                                                + " -130.8545966116691 52.00807146727025, -129.50812897394974 49.85372324691927,"
+                                                + " -130.5300633861675 49.20465679591609, -129.25955033314003 48.60392508062591,"
+                                                + " -128.00975216684665 50.986137055052474, -125.8623089087404 48.63154492960477,"
+                                                + " -123.984159178178 50.68231871628503, -126.91186316993704 52.15307567440926,"
+                                                + " -125.3444367403868 53.54787804784162, -127.57473954542964 54.06575021619523 ))");
         roi.setSRID(4326);
 
         try {
@@ -2217,6 +2218,7 @@ public class DownloadProcessTest extends WPSTestSupport {
                     getLayerId(MockData.USA_WORLDIMG), // layerName
                     null, // filter
                     "image/tiff", // outputFormat
+                    "image/tiff",
                     null, // targetCRS
                     WGS84, // roiCRS
                     roi, // roi
@@ -2233,10 +2235,11 @@ public class DownloadProcessTest extends WPSTestSupport {
                     new NullProgressListener() // progressListener
                     );
 
-            Assert.assertFalse(true);
+            assertFalse(true);
         } catch (ProcessException e) {
             Assert.assertEquals(
-                    "java.lang.IllegalArgumentException: Download Limits Exceeded. Unable to proceed!: Download Limits Exceeded. Unable to proceed!",
+                    "java.lang.IllegalArgumentException: Download Limits Exceeded. Unable to"
+                            + " proceed!: Download Limits Exceeded. Unable to proceed!",
                     e.getMessage()
                             + (e.getCause() != null ? ": " + e.getCause().getMessage() : ""));
         }
@@ -2271,7 +2274,12 @@ public class DownloadProcessTest extends WPSTestSupport {
                 (Polygon)
                         new WKTReader2()
                                 .read(
-                                        "POLYGON (( -127.57473954542964 54.06575021619523, -130.88669845369998 52.00807146727025, -129.50812897394974 49.85372324691927, -130.5300633861675 49.20465679591609, -129.25955033314003 48.60392508062591, -128.00975216684665 50.986137055052474, -125.8623089087404 48.63154492960477, -123.984159178178 50.68231871628503, -126.91186316993704 52.15307567440926, -125.3444367403868 53.54787804784162, -127.57473954542964 54.06575021619523 ))");
+                                        "POLYGON (( -127.57473954542964 54.06575021619523,"
+                                                + " -130.88669845369998 52.00807146727025, -129.50812897394974 49.85372324691927,"
+                                                + " -130.5300633861675 49.20465679591609, -129.25955033314003 48.60392508062591,"
+                                                + " -128.00975216684665 50.986137055052474, -125.8623089087404 48.63154492960477,"
+                                                + " -123.984159178178 50.68231871628503, -126.91186316993704 52.15307567440926,"
+                                                + " -125.3444367403868 53.54787804784162, -127.57473954542964 54.06575021619523 ))");
         roi.setSRID(4326);
 
         try {
@@ -2280,6 +2288,7 @@ public class DownloadProcessTest extends WPSTestSupport {
                     getLayerId(MockData.USA_WORLDIMG), // layerName
                     null, // filter
                     "image/tiff", // outputFormat
+                    "image/tiff",
                     null, // targetCRS
                     WGS84, // roiCRS
                     roi, // roi
@@ -2296,10 +2305,12 @@ public class DownloadProcessTest extends WPSTestSupport {
                     new NullProgressListener() // progressListener
                     );
 
-            Assert.assertFalse(true);
+            assertFalse(true);
         } catch (ProcessException e) {
             Assert.assertEquals(
-                    "org.geotools.process.ProcessException: java.io.IOException: Download Exceeded the maximum HARD allowed size!: java.io.IOException: Download Exceeded the maximum HARD allowed size!",
+                    "org.geotools.process.ProcessException: java.io.IOException: Download"
+                            + " Exceeded the maximum HARD allowed size!: java.io.IOException: Download Exceeded the maximum"
+                            + " HARD allowed size!",
                     e.getMessage()
                             + (e.getCause() != null ? ": " + e.getCause().getMessage() : ""));
         }
@@ -2331,11 +2342,12 @@ public class DownloadProcessTest extends WPSTestSupport {
         DownloadProcess downloadProcess =
                 new DownloadProcess(getGeoServer(), limits, resourceManager);
 
-        File nonScaled =
+        RawData nonScaled =
                 downloadProcess.execute(
                         getLayerId(MockData.USA_WORLDIMG), // layerName
                         null, // filter
                         "image/tiff", // outputFormat
+                        "image/tiff",
                         null, // targetCRS
                         WGS84, // roiCRS
                         null, // roi
@@ -2352,19 +2364,11 @@ public class DownloadProcessTest extends WPSTestSupport {
                         new NullProgressListener() // progressListener
                         );
 
-        Assert.assertNotNull(nonScaled);
-
-        GeoTiffReader reader = null;
-        GridCoverage2D gc = null;
-        try {
-            final File[] tiffFiles = extractFiles(nonScaled, "GTIFF");
-            Assert.assertNotNull(tiffFiles);
-            Assert.assertTrue(tiffFiles.length > 0);
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
-
-            Assert.assertNotNull(gc);
-
+        try (AutoCloseableResource resource =
+                        new AutoCloseableResource(resourceManager, nonScaled);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
             // ten times the size of the original coverage
             int targetSizeX = (int) (gc.getGridGeometry().getGridRange2D().getWidth() * 10);
             int targetSizeY = (int) (gc.getGridGeometry().getGridRange2D().getHeight() * 10);
@@ -2372,6 +2376,7 @@ public class DownloadProcessTest extends WPSTestSupport {
                     getLayerId(MockData.USA_WORLDIMG), // layerName
                     null, // filter
                     "image/tiff", // outputFormat
+                    "image/tiff",
                     null, // targetCRS
                     WGS84, // roiCRS
                     null, // roi
@@ -2389,22 +2394,14 @@ public class DownloadProcessTest extends WPSTestSupport {
                     );
 
             // exception should have been thrown at this stage
-            Assert.assertFalse(true);
+            assertFalse(true);
         } catch (ProcessException e) {
             Assert.assertEquals(
-                    "org.geotools.process.ProcessException: java.io.IOException: Download Exceeded the maximum HARD allowed size!: java.io.IOException: Download Exceeded the maximum HARD allowed size!",
+                    "org.geotools.process.ProcessException: java.io.IOException: Download"
+                            + " Exceeded the maximum HARD allowed size!: java.io.IOException: Download Exceeded the maximum"
+                            + " HARD allowed size!",
                     e.getMessage()
                             + (e.getCause() != null ? ": " + e.getCause().getMessage() : ""));
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
 
         // Test same process for checking write output limits, using selected band indices
@@ -2414,8 +2411,8 @@ public class DownloadProcessTest extends WPSTestSupport {
                                 new DownloadServiceConfiguration(
                                         DownloadServiceConfiguration.NO_LIMIT,
                                         DownloadServiceConfiguration.NO_LIMIT,
-                                        30000, // = 100x100 pixels x 3 bands x 1 byte (8 bits) per
-                                        // band
+                                        30000, // = 100x100 pixels x 3 bands x 1 byte (8 bits)
+                                        // per band
                                         DownloadServiceConfiguration.NO_LIMIT,
                                         DownloadServiceConfiguration.DEFAULT_COMPRESSION_LEVEL,
                                         DownloadServiceConfiguration.NO_LIMIT)),
@@ -2432,6 +2429,7 @@ public class DownloadProcessTest extends WPSTestSupport {
                     getLayerId(MockData.USA_WORLDIMG), // layerName
                     null, // filter
                     "image/tiff", // outputFormat
+                    "image/tiff",
                     null, // targetCRS
                     WGS84, // roiCRS
                     null, // roi
@@ -2449,7 +2447,7 @@ public class DownloadProcessTest extends WPSTestSupport {
                     );
 
             // exception should have been thrown at this stage
-            Assert.assertFalse(true);
+            fail();
         } catch (ProcessException e) {
             Assert.assertEquals(
                     "java.lang.IllegalArgumentException: Download Limits Exceeded. "
@@ -2488,7 +2486,12 @@ public class DownloadProcessTest extends WPSTestSupport {
                 (Polygon)
                         new WKTReader2()
                                 .read(
-                                        "POLYGON (( -127.57473954542964 54.06575021619523, -130.8545966116691 52.00807146727025, -129.50812897394974 49.85372324691927, -130.5300633861675 49.20465679591609, -129.25955033314003 48.60392508062591, -128.00975216684665 50.986137055052474, -125.8623089087404 48.63154492960477, -123.984159178178 50.68231871628503, -126.91186316993704 52.15307567440926, -125.3444367403868 53.54787804784162, -127.57473954542964 54.06575021619523 ))");
+                                        "POLYGON (( -127.57473954542964 54.06575021619523, "
+                                                + "-130.8545966116691 52.00807146727025, -129.50812897394974 49.85372324691927, "
+                                                + "-130.5300633861675 49.20465679591609, -129.25955033314003 48.60392508062591, "
+                                                + "-128.00975216684665 50.986137055052474, -125.8623089087404 48.63154492960477, "
+                                                + "-123.984159178178 50.68231871628503, -126.91186316993704 52.15307567440926, "
+                                                + "-125.3444367403868 53.54787804784162, -127.57473954542964 54.06575021619523 ))");
         roi.setSRID(4326);
 
         try {
@@ -2497,6 +2500,7 @@ public class DownloadProcessTest extends WPSTestSupport {
                     getLayerId(MockData.USA_WORLDIMG), // layerName
                     null, // filter
                     "image/tiff", // outputFormat
+                    "image/tiff",
                     null, // targetCRS
                     WGS84, // roiCRS
                     roi, // roi
@@ -2585,37 +2589,23 @@ public class DownloadProcessTest extends WPSTestSupport {
                 new DownloadProcess(getGeoServer(), limits, resourceManager);
         try {
             // Download the features. It should throw an exception
-            downloadProcess.execute(
-                    getLayerId(MockData.POLYGONS), // layerName
-                    null, // filter
-                    "application/zip", // outputFormat
-                    null, // targetCRS
-                    CRS.decode("EPSG:32615"), // roiCRS
-                    roi, // roi
-                    false, // cropToGeometry
-                    null, // interpolation
-                    null, // targetSizeX
-                    null, // targetSizeY
-                    null, // bandSelectIndices
-                    null, // Writing params
-                    false,
-                    false,
-                    0d,
-                    null,
-                    new NullProgressListener() // progressListener
-                    );
+            executeVectorDownload(
+                    downloadProcess,
+                    MockData.POLYGONS,
+                    "application/zip",
+                    "application/zip",
+                    "EPSG:32615",
+                    roi,
+                    false);
 
-            Assert.assertFalse(true);
+            Assert.fail();
         } catch (ProcessException e) {
             Assert.assertEquals(
-                    "java.io.IOException: Download Exceeded the maximum HARD allowed size!: Download Exceeded the maximum HARD allowed size!",
+                    "java.io.IOException: Download Exceeded the maximum HARD allowed size!: "
+                            + "Download Exceeded the maximum HARD allowed size!",
                     e.getMessage()
                             + (e.getCause() != null ? ": " + e.getCause().getMessage() : ""));
         }
-    }
-
-    private WPSResourceManager getResourceManager() {
-        return GeoServerExtensions.bean(WPSResourceManager.class);
     }
 
     /**
@@ -2645,7 +2635,12 @@ public class DownloadProcessTest extends WPSTestSupport {
                 (Polygon)
                         new WKTReader2()
                                 .read(
-                                        "POLYGON (( -127.57473954542964 54.06575021619523, -130.88669845369998 52.00807146727025, -129.50812897394974 49.85372324691927, -130.5300633861675 49.20465679591609, -129.25955033314003 48.60392508062591, -128.00975216684665 50.986137055052474, -125.8623089087404 48.63154492960477, -123.984159178178 50.68231871628503, -126.91186316993704 52.15307567440926, -125.3444367403868 53.54787804784162, -127.57473954542964 54.06575021619523 ))");
+                                        "POLYGON (( -127.57473954542964 54.06575021619523,"
+                                                + " -130.88669845369998 52.00807146727025, -129.50812897394974 49.85372324691927,"
+                                                + " -130.5300633861675 49.20465679591609, -129.25955033314003 48.60392508062591,"
+                                                + " -128.00975216684665 50.986137055052474, -125.8623089087404 48.63154492960477,"
+                                                + " -123.984159178178 50.68231871628503, -126.91186316993704 52.15307567440926,"
+                                                + " -125.3444367403868 53.54787804784162, -127.57473954542964 54.06575021619523 ))");
         roi.setSRID(4326);
 
         try {
@@ -2654,6 +2649,7 @@ public class DownloadProcessTest extends WPSTestSupport {
                     getLayerId(MockData.USA_WORLDIMG), // layerName
                     null, // filter
                     "image/tiff", // outputFormat
+                    "image/tiff",
                     null, // targetCRS
                     WGS84, // roiCRS
                     roi, // roi
@@ -2674,7 +2670,9 @@ public class DownloadProcessTest extends WPSTestSupport {
             Throwable e1 = listener.exception;
             Assert.assertNotNull(e1);
             Assert.assertEquals(
-                    "org.geotools.process.ProcessException: java.io.IOException: Download Exceeded the maximum HARD allowed size!: java.io.IOException: Download Exceeded the maximum HARD allowed size!",
+                    "org.geotools.process.ProcessException: java.io.IOException: Download"
+                            + " Exceeded the maximum HARD allowed size!: java.io.IOException: Download Exceeded the maximum"
+                            + " HARD allowed size!",
                     e.getMessage()
                             + (e.getCause() != null ? ": " + e.getCause().getMessage() : ""));
         }
@@ -2717,6 +2715,7 @@ public class DownloadProcessTest extends WPSTestSupport {
                     getLayerId(MockData.POLYGONS), // layerName
                     null, // filter
                     "application/zip", // outputFormat
+                    "application/zip",
                     null, // targetCRS
                     CRS.decode("EPSG:32615"), // roiCRS
                     roi, // roi
@@ -2735,20 +2734,22 @@ public class DownloadProcessTest extends WPSTestSupport {
 
         } catch (ProcessException e) {
             Assert.assertEquals(
-                    "java.io.IOException: Download Exceeded the maximum HARD allowed size!: Download Exceeded the maximum HARD allowed size!",
+                    "java.io.IOException: Download Exceeded the maximum HARD allowed size!:"
+                            + " Download Exceeded the maximum HARD allowed size!",
                     e.getMessage()
                             + (e.getCause() != null ? ": " + e.getCause().getMessage() : ""));
 
             Throwable le = listener.exception;
             Assert.assertEquals(
-                    "java.io.IOException: Download Exceeded the maximum HARD allowed size!: Download Exceeded the maximum HARD allowed size!",
+                    "java.io.IOException: Download Exceeded the maximum HARD allowed size!:"
+                            + " Download Exceeded the maximum HARD allowed size!",
                     le.getMessage()
                             + (le.getCause() != null ? ": " + le.getCause().getMessage() : ""));
 
             return;
         }
 
-        Assert.assertFalse(true);
+        assertFalse(true);
     }
 
     /**
@@ -2756,38 +2757,34 @@ public class DownloadProcessTest extends WPSTestSupport {
      *
      * @throws Exception the exception
      */
-    @Test
-    public void testWrongOutputFormat() throws Exception {
+    @Test(expected = Exception.class)
+    public void testWrongOutputFormat() throws FactoryException {
         // Creates the new process for the download
         DownloadProcess downloadProcess = createDefaultTestingDownloadProcess();
 
         final DefaultProgressListener progressListener = new DefaultProgressListener();
-        try {
-            // Download the features. It should throw an exception.
-            downloadProcess.execute(
-                    getLayerId(MockData.POLYGONS), // layerName
-                    null, // filter
-                    "IAmWrong!!!", // outputFormat
-                    null, // targetCRS
-                    CRS.decode("EPSG:32615"), // roiCRS
-                    roi, // roi
-                    false, // cropToGeometry
-                    null, // interpolation
-                    null, // targetSizeX
-                    null, // targetSizeY
-                    null, // bandSelectIndices
-                    null, // Writing params
-                    false,
-                    false,
-                    0d,
-                    null,
-                    progressListener // progressListener
-                    );
 
-            Assert.assertTrue("We did not get an exception", false);
-        } catch (Exception e) {
-            Assert.assertTrue("Everything as expected", true);
-        }
+        // Download the features. It should throw an exception.
+        downloadProcess.execute(
+                getLayerId(MockData.POLYGONS), // layerName
+                null, // filter
+                "IAmWrong!!!", // outputFormat
+                "",
+                null, // targetCRS
+                CRS.decode("EPSG:32615"), // roiCRS
+                roi, // roi
+                false, // cropToGeometry
+                null, // interpolation
+                null, // targetSizeX
+                null, // targetSizeY
+                null, // bandSelectIndices
+                null, // Writing params
+                false,
+                false,
+                0d,
+                null,
+                progressListener // progressListener
+                );
     }
 
     /**
@@ -2849,11 +2846,12 @@ public class DownloadProcessTest extends WPSTestSupport {
                         FF.lessOrEqual(property, FF.literal(10000)),
                         FF.greaterOrEqual(property, FF.literal(1000)));
 
-        File rasterZip =
+        RawData raster =
                 downloadProcess.execute(
                         getLayerId(MIXED_RES), // layerName
                         filter, // filter
                         "image/tiff", // outputFormat
+                        "image/tiff",
                         null, // targetCRS
                         CRS.decode("EPSG:32610", true),
                         ROI3, // roi
@@ -2870,30 +2868,15 @@ public class DownloadProcessTest extends WPSTestSupport {
                         new NullProgressListener() // progressListener
                         );
 
-        Assert.assertNotNull(rasterZip);
-        GeoTiffReader reader = null;
-        GridCoverage2D gc = null;
-        try {
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            Assert.assertNotNull(tiffFiles);
-            Assert.assertTrue(tiffFiles.length > 0);
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
+
             // check coverage size
             RenderedImage ri = gc.getRenderedImage();
             Assert.assertEquals(512, ri.getWidth());
             Assert.assertEquals(128, ri.getHeight());
-
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -2905,13 +2888,14 @@ public class DownloadProcessTest extends WPSTestSupport {
             WPSResourceManager resourceManager,
             double expectedX,
             double expectedY)
-            throws IOException {
+            throws Exception {
 
-        File rasterZip =
+        RawData raster =
                 downloadProcess.execute(
                         getLayerId(MIXED_RES), // layerName
                         filter, // filter
-                        "image/tiff", // outputFormat
+                        "image/tiff", // mimeType
+                        "image/tiff", // result
                         null, // targetCRS
                         roiCrs, // roiCRS
                         roi, // roi
@@ -2928,17 +2912,11 @@ public class DownloadProcessTest extends WPSTestSupport {
                         new NullProgressListener() // progressListener
                         );
 
-        Assert.assertNotNull(rasterZip);
-        GeoTiffReader reader = null;
-        GridCoverage2D gc = null;
-        try {
-            final File[] tiffFiles = extractFiles(rasterZip, "GTIFF");
-            Assert.assertNotNull(tiffFiles);
-            Assert.assertTrue(tiffFiles.length > 0);
-            reader = new GeoTiffReader(tiffFiles[0]);
-            gc = reader.read(null);
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster);
+                AutoDisposableGeoTiffReader reader =
+                        new AutoDisposableGeoTiffReader(resource.getFile());
+                AutoDisposableGridCoverage2D gc = reader.read()) {
 
-            Assert.assertNotNull(gc);
             Assert.assertEquals(
                     "32610",
                     gc.getCoordinateReferenceSystem().getIdentifiers().iterator().next().getCode());
@@ -2951,17 +2929,6 @@ public class DownloadProcessTest extends WPSTestSupport {
 
             Assert.assertEquals(expectedX, resX, DELTA);
             Assert.assertEquals(expectedY, resY, DELTA);
-
-        } finally {
-            if (gc != null) {
-                CoverageCleanerCallback.disposeCoverage(gc);
-            }
-            if (reader != null) {
-                reader.dispose();
-            }
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
         }
     }
 
@@ -3000,11 +2967,12 @@ public class DownloadProcessTest extends WPSTestSupport {
         final int requestedSizeY = 128;
 
         // Download the coverage
-        File rasterZip =
+        RawData raster =
                 downloadProcess.execute(
                         getLayerId(MockData.USA_WORLDIMG), // layerName
                         null, // filter
                         outputFormat, // outputFormat
+                        outputFormat,
                         null, // targetCRS
                         WGS84, // roiCRS
                         roi, // roi
@@ -3021,19 +2989,9 @@ public class DownloadProcessTest extends WPSTestSupport {
                         new NullProgressListener() // progressListener
                         );
 
-        // Final checks on the result
-        Assert.assertNotNull(rasterZip);
-
-        try {
+        try (AutoCloseableResource resource = new AutoCloseableResource(resourceManager, raster)) {
             String formatName = MimeType.valueOf(outputFormat).getSubtype().toUpperCase();
-            final File[] files = extractFiles(rasterZip, formatName);
-            Assert.assertNotNull(files);
-            Assert.assertTrue(files.length > 0);
-            testDownloadedImage(files[0], formatName, requestedSizeX, requestedSizeY);
-        } finally {
-
-            // clean up process
-            resourceManager.finished(resourceManager.getExecutionId(true));
+            testDownloadedImage(resource.getFile(), formatName, requestedSizeX, requestedSizeY);
         }
     }
 
@@ -3258,6 +3216,68 @@ public class DownloadProcessTest extends WPSTestSupport {
             }
         } else {
             return new ShapefileDataStore(URLs.fileToUrl(shapeFile));
+        }
+    }
+
+    /**
+     * Private method for decoding a GeoPackage
+     *
+     * @param input the input zip
+     * @return A GeoPackage object if one was found, an exception otherwise
+     */
+    private GeoPackage decodeGeoPackage(InputStream input) throws Exception {
+        // create the temp directory and register it as a temporary resource
+        File tempDir =
+                IOUtils.createRandomDirectory(
+                        IOUtils.createTempDirectory("gpkgziptemp").getAbsolutePath(),
+                        "download-process",
+                        "download-services");
+
+        // unzip to the temporary directory
+        File geopackage = null;
+        File zipFile = null;
+
+        // extract shp-zip file
+        try (ZipInputStream zis = new ZipInputStream(input)) {
+            ZipEntry entry = null;
+
+            // Cycle on all the entries and copies the input shape in the target directory
+            while ((entry = zis.getNextEntry()) != null) {
+                File file = new File(tempDir, entry.getName());
+                if (entry.isDirectory()) {
+                    file.mkdir();
+                } else {
+
+                    if (file.getName().toLowerCase().endsWith(".gpkg")) {
+                        geopackage = file;
+                    } else if (file.getName().toLowerCase().endsWith(".zip")) {
+                        zipFile = file;
+                    }
+
+                    int count;
+                    byte[] data = new byte[4096];
+                    // write the files to the disk
+                    try (FileOutputStream fos = new FileOutputStream(file)) {
+                        while ((count = zis.read(data)) != -1) {
+                            fos.write(data, 0, count);
+                        }
+                        fos.flush();
+                    }
+                }
+                zis.closeEntry();
+            }
+        }
+
+        // Read the shapefile
+        if (geopackage == null) {
+            if (zipFile != null) return decodeGeoPackage(new FileInputStream(zipFile));
+            else {
+                FileUtils.deleteDirectory(tempDir);
+                throw new IOException(
+                        "Could not find any file with .gpkg extension in the zip file");
+            }
+        } else {
+            return new GeoPackage(geopackage);
         }
     }
 

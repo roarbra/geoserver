@@ -6,10 +6,12 @@ package org.geoserver.featurestemplating.builders.flat;
 
 import java.io.IOException;
 import java.util.List;
+import org.geoserver.featurestemplating.builders.AbstractTemplateBuilder;
 import org.geoserver.featurestemplating.builders.TemplateBuilder;
 import org.geoserver.featurestemplating.builders.impl.IteratingBuilder;
 import org.geoserver.featurestemplating.builders.impl.TemplateBuilderContext;
 import org.geoserver.featurestemplating.writers.TemplateOutputWriter;
+import org.geotools.util.Converters;
 import org.xml.sax.helpers.NamespaceSupport;
 
 /**
@@ -25,37 +27,57 @@ public class FlatIteratingBuilder extends IteratingBuilder implements FlatBuilde
         nameHelper = new AttributeNameHelper(this.key, separator);
     }
 
+    public FlatIteratingBuilder(
+            String key, NamespaceSupport namespaces, String separator, boolean topLevelComplex) {
+        super(key, namespaces, topLevelComplex);
+        nameHelper = new AttributeNameHelper(this.key, separator);
+    }
+
     @Override
     public void evaluate(TemplateOutputWriter writer, TemplateBuilderContext context)
             throws IOException {
-        if (!isFeaturesField) {
+        if (ownOutput) {
             context = evaluateSource(context);
-            if (context.getCurrentObj() != null) {
-                if (context.getCurrentObj() instanceof List) evaluateCollection(writer, context);
-                else evaluateInternal(writer, context, 0, 1);
+            Object o = context.getCurrentObj();
+            if (o != null) {
+                if (o instanceof List) {
+                    evaluateCollection(writer, (List) o, context.getParent(), false);
+                } else if (o.getClass().isArray()) {
+                    List list = Converters.convert(o, List.class);
+                    evaluateCollection(writer, list, context.getParent(), false);
+                } else {
+                    evaluateInternal(writer, context, 0, 1);
+                }
             }
         } else {
             if (evaluateFilter(context)) {
+                addSkipObjectEncodingHint(context);
                 for (TemplateBuilder child : children) {
-                    if (child instanceof FlatCompositeBuilder) writer.startObject();
+                    AbstractTemplateBuilder abstractChild = (AbstractTemplateBuilder) child;
+                    if (child instanceof FlatCompositeBuilder)
+                        writer.startObject(abstractChild.getKey(context), encodingHints);
                     child.evaluate(writer, context);
-                    if (child instanceof FlatCompositeBuilder) writer.endObject();
+                    if (child instanceof FlatCompositeBuilder)
+                        writer.endObject(abstractChild.getKey(context), encodingHints);
                 }
             }
         }
     }
 
     @Override
-    public void evaluateCollection(TemplateOutputWriter writer, TemplateBuilderContext context)
+    public void evaluateCollection(
+            TemplateOutputWriter writer,
+            List elements,
+            TemplateBuilderContext parent,
+            boolean iterateKey)
             throws IOException {
 
-        List elements = (List) context.getCurrentObj();
         int elementsSize = elements.size();
         int actualIndex = 1;
         for (int i = 0; i < elementsSize; i++) {
             Object o = elements.get(i);
             TemplateBuilderContext childContext = new TemplateBuilderContext(o);
-            childContext.setParent(context.getParent());
+            childContext.setParent(parent);
             if (evaluateFilter(childContext)) {
                 evaluateInternal(writer, childContext, elementsSize, actualIndex);
                 actualIndex++;

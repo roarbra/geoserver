@@ -4,17 +4,17 @@
  */
 package org.geoserver.featurestemplating.configuration;
 
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import static org.geoserver.platform.resource.Resource.Type.RESOURCE;
+
 import java.io.IOException;
 import java.io.InputStream;
+import org.apache.commons.io.FilenameUtils;
 import org.geoserver.featurestemplating.builders.impl.RootBuilder;
-import org.geoserver.featurestemplating.readers.JSONTemplateReader;
 import org.geoserver.featurestemplating.readers.TemplateReader;
+import org.geoserver.featurestemplating.readers.TemplateReaderConfiguration;
+import org.geoserver.featurestemplating.readers.TemplateReaderProvider;
 import org.geoserver.platform.FileWatcher;
 import org.geoserver.platform.resource.Resource;
-import org.xml.sax.helpers.NamespaceSupport;
 
 /**
  * This class extends {@link FileWatcher} to provide functionalities to dynamically reload a
@@ -22,13 +22,36 @@ import org.xml.sax.helpers.NamespaceSupport;
  */
 public class TemplateWatcher extends FileWatcher<RootBuilder> {
 
-    private NamespaceSupport namespaces;
-    private String fileName;
+    private TemplateReaderConfiguration configuration;
 
-    public TemplateWatcher(Resource resource, NamespaceSupport namespaces) {
+    public TemplateWatcher(Resource resource, TemplateReaderConfiguration configuration) {
         super(resource);
-        this.fileName = resource.name();
-        this.namespaces = namespaces;
+        this.configuration = configuration;
+    }
+
+    /**
+     * Reads the file updating the last check timestamp.
+     *
+     * <p>Subclasses can override {@link #parseFileContents(InputStream)} to do something when the
+     * file is read.
+     *
+     * @return parsed file contents
+     */
+    public RootBuilder read() throws IOException {
+        RootBuilder result = null;
+
+        if (resource.getType() == RESOURCE) {
+
+            try (InputStream is = resource.in()) {
+                result = parseResource(resource);
+
+                lastModified = resource.lastmodified();
+                lastCheck = System.currentTimeMillis();
+                stale = false;
+            }
+        }
+
+        return result;
     }
 
     /**
@@ -36,30 +59,10 @@ public class TemplateWatcher extends FileWatcher<RootBuilder> {
      *
      * @return builderTree as a RootBuilder
      */
-    @Override
-    public RootBuilder parseFileContents(InputStream in) throws IOException {
-        TemplateReader templateReader = getReader(in);
-        if (templateReader != null) return templateReader.getRootBuilder();
-        else return null;
-    }
-
-    public RootBuilder getTemplate() throws IOException {
-        return read();
-    }
-
-    private TemplateReader getReader(InputStream in) throws IOException {
-        TemplateReader templateReader = null;
-        if (isJsonTemplateType()) {
-            ObjectMapper mapper =
-                    new ObjectMapper(new JsonFactory().enable(JsonParser.Feature.ALLOW_COMMENTS));
-            templateReader = new JSONTemplateReader(mapper.readTree(in), namespaces);
-        }
-        return templateReader;
-    }
-
-    private boolean isJsonTemplateType() {
-        return fileName.equals(TemplateIdentifier.JSON.getFilename())
-                || fileName.equals(TemplateIdentifier.JSONLD.getFilename())
-                || fileName.equals(TemplateIdentifier.GEOJSON.getFilename());
+    public RootBuilder parseResource(Resource resource) throws IOException {
+        String extension = FilenameUtils.getExtension(resource.name());
+        TemplateReader reader =
+                TemplateReaderProvider.findReader(extension, resource, configuration);
+        return reader.getRootBuilder();
     }
 }

@@ -4,10 +4,14 @@
  */
 package org.geoserver.featurestemplating.ogcapi;
 
+import static org.geoserver.featurestemplating.builders.EncodingHints.isSingleFeatureRequest;
+
 import com.fasterxml.jackson.core.JsonGenerator;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
+import org.geoserver.featurestemplating.builders.EncodingHints;
+import org.geoserver.featurestemplating.configuration.TemplateIdentifier;
 import org.geoserver.featurestemplating.writers.GeoJSONWriter;
 import org.geoserver.ogcapi.APIRequestInfo;
 import org.geoserver.ogcapi.Link;
@@ -19,22 +23,28 @@ import org.springframework.http.MediaType;
 
 public class GeoJSONAPIWriter extends GeoJSONWriter {
 
-    public GeoJSONAPIWriter(JsonGenerator generator) {
-        super(generator);
+    public GeoJSONAPIWriter(JsonGenerator generator, TemplateIdentifier identifier) {
+        super(generator, identifier);
+    }
+
+    @Override
+    public void startTemplateOutput(EncodingHints encodingHints) throws IOException {
+        boolean isGeoJSON = identifier.equals(TemplateIdentifier.GEOJSON);
+        if (isSingleFeatureRequest() && isGeoJSON) startObject(null, encodingHints);
+        else super.startTemplateOutput(encodingHints);
     }
 
     public void writeLinks(
             String previous, String next, String prefixedName, String featureId, String mimeType)
             throws IOException {
         APIRequestInfo requestInfo = APIRequestInfo.get();
-        writeElementName("links");
-        startArray();
+        startArray("links", null);
         // paging links
         if (previous != null) {
-            writeLink("Previous page", mimeType, "prev", previous);
+            writeLink(previous, "prev", mimeType, "Previous page", null);
         }
         if (next != null) {
-            writeLink("Next page", mimeType, "next", next);
+            writeLink(next, "next", mimeType, "Next page", null);
         }
         // alternate/self links
         String basePath = "ogc/features/collections/" + ResponseUtils.urlEncode(prefixedName);
@@ -57,7 +67,7 @@ public class GeoJSONAPIWriter extends GeoJSONWriter {
                 linkType = Link.REL_SELF;
                 linkTitle = "This document";
             }
-            writeLink(linkTitle, format.toString(), linkType, href);
+            writeLink(href, linkType, format.toString(), linkTitle, null);
         }
         // backpointer to the collection
         for (MediaType format :
@@ -70,8 +80,18 @@ public class GeoJSONAPIWriter extends GeoJSONWriter {
                             URLMangler.URLType.SERVICE);
             String linkType = Link.REL_COLLECTION;
             String linkTitle = "The collection description as " + format;
-            writeLink(linkTitle, format.toString(), linkType, href);
+            writeLink(href, linkType, format.toString(), linkTitle, null);
         }
-        endArray();
+        endArray(null, null);
+    }
+
+    @Override
+    public void startObject(String name, EncodingHints encodingHints) throws IOException {
+        if (!skipObjectWriting(encodingHints)) super.startObject(name, encodingHints);
+    }
+
+    @Override
+    public void endObject(String name, EncodingHints encodingHints) throws IOException {
+        if (!skipObjectWriting(encodingHints)) super.endObject(name, encodingHints);
     }
 }
