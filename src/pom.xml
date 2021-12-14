@@ -1038,7 +1038,7 @@
       <dependency>
         <groupId>log4j</groupId>
         <artifactId>log4j</artifactId>
-        <version>1.2.17</version>
+        <version>1.2.17.norce</version>
       </dependency>
       <dependency>
         <groupId>com.lowagie</groupId>
@@ -1463,6 +1463,17 @@
       <id>osgeo-releases</id>
       <name>OSGeo Nexus Release Repository</name>
       <url>https://repo.osgeo.org/repository/release/</url>
+    </repository>
+    <repository>
+      <releases>
+        <enabled>true</enabled>
+      </releases>
+      <snapshots>
+        <enabled>false</enabled>
+      </snapshots>
+      <id>osgeo-releases-2</id>
+      <name>OSGeo Nexus Release Repository</name>
+      <url>https://repo.osgeo.org/repository/geotools-releases/</url>
     </repository>
 
     <repository>
