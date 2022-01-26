@@ -28,6 +28,7 @@ import org.geoserver.catalog.ResourceInfo;
 import org.geoserver.catalog.WMSLayerInfo;
 import org.geoserver.catalog.WMTSLayerInfo;
 import org.geoserver.ows.Dispatcher;
+import org.geoserver.ows.Request;
 import org.geoserver.platform.GeoServerExtensions;
 import org.geoserver.platform.ServiceException;
 import org.geoserver.wms.map.MetatileMapOutputFormat;
@@ -723,7 +724,10 @@ public class GetMap {
                 WMTSMapLayer mapLayer = new WMTSMapLayer(wmts, gt2Layer);
                 mapLayer.setTitle(wmtsLayer.prefixedName());
 
-                mapLayer.setRawTime((String) Dispatcher.REQUEST.get().getRawKvp().get("time"));
+                final Request req = Dispatcher.REQUEST.get();
+                if (req != null && req.getRawKvp() != null) {
+                    mapLayer.setRawTime((String) req.getRawKvp().get("time"));
+                }
 
                 mapContent.addLayer(mapLayer);
 
