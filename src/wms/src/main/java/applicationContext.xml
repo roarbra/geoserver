@@ -1,4 +1,4 @@
-﻿
+
 <!-- 
  Copyright (C) 2014 - 2016 Open Source Geospatial Foundation. All rights reserved.
  This code is licensed under the GPL 2.0 license, available at the root
@@ -279,7 +279,7 @@
  	<bean id="validateSldKvpParser" class="org.geoserver.ows.kvp.BooleanKvpParser">
  		<constructor-arg value="validateschema"/>
  	</bean>
-    <bean id="sldKvpParser" class="org.geoserver.ows.kvp.URLKvpParser">
+    <bean id="sldKvpParser" class="org.geoserver.ows.kvp.URIKvpParser">
         <constructor-arg value="sld"/>
     </bean>
  	<bean id="startIndexKvpParser" class="org.geoserver.ows.kvp.IntegerKvpParser">

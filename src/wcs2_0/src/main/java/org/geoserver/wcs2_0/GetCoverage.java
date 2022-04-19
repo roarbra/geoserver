@@ -450,21 +450,6 @@ public class GetCoverage {
         coverages = temp;
 
         //
-        // scaling extension
-        //
-        // scaling is done in raster space with eventual interpolation
-        for (int i = 0; i < coverages.size(); i++) {
-            GridCoverage2D scaled =
-                    handleScaling(
-                            coverages.get(i),
-                            scaling,
-                            gridCoverageRequest.getSpatialInterpolation(),
-                            preAppliedScale,
-                            hints);
-            coverages.set(i, scaled);
-        }
-
-        //
         // reprojection
         //
         // reproject the output coverage to an eventual outputCrs
@@ -480,6 +465,19 @@ public class GetCoverage {
 
         // after reprojection we can re-unite the coverages into one
         GridCoverage2D coverage = mosaicCoverages(coverages, hints);
+
+        //
+        // scaling extension
+        //
+        // scaling is done in raster space with eventual interpolation
+        GridCoverage2D scaled =
+                handleScaling(
+                        coverage,
+                        scaling,
+                        gridCoverageRequest.getSpatialInterpolation(),
+                        preAppliedScale,
+                        hints);
+        coverage = scaled;
 
         //
         // axes swap management
@@ -1236,8 +1234,7 @@ public class GetCoverage {
             List<GeneralParameterDescriptor> descriptors =
                     readParametersDescriptor.getDescriptor().descriptors();
             String sortBySpec =
-                    request.getSortBy()
-                            .stream()
+                    request.getSortBy().stream()
                             .map(
                                     sb ->
                                             sb.getPropertyName().getPropertyName()

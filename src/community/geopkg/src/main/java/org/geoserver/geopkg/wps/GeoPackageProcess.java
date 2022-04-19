@@ -144,9 +144,8 @@ public class GeoPackageProcess implements GeoServerProcess {
     @DescribeResult(name = "geopackage", description = "Link to Compiled Geopackage File")
     public URL execute(
             @DescribeParameter(
-                        name = "contents",
-                        description = "xml scheme describing geopackage contents"
-                    )
+                            name = "contents",
+                            description = "xml scheme describing geopackage contents")
                     GeoPackageProcessRequest contents)
             throws IOException {
 
@@ -284,7 +283,7 @@ public class GeoPackageProcess implements GeoServerProcess {
         request.setTransparent(tiles.isTransparent());
         request.setStyleBody(tiles.getSldBody());
         if (tiles.getSld() != null) {
-            request.setStyleUrl(tiles.getSld().toURL());
+            request.setStyleUrl(tiles.getSld());
         } else if (tiles.getSldBody() != null) {
             request.setStyleBody(tiles.getSldBody());
         } else {
@@ -376,8 +375,7 @@ public class GeoPackageProcess implements GeoServerProcess {
         }
         if (features.getPropertyNames() != null) {
             q.setPropertyNames(
-                    features.getPropertyNames()
-                            .stream()
+                    features.getPropertyNames().stream()
                             .map(qn -> qn.getLocalPart())
                             .toArray(n -> new String[n]));
         }
