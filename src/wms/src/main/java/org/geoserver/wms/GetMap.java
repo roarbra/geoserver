@@ -717,8 +717,7 @@ public class GetMap {
                     mapContent.addLayer(Layer);
                 }
             } else if (layerType == MapLayerInfo.TYPE_WMTS) {
-                addWMTSLayer(mapContent, layer);
-
+                addWMTSLayer(mapContent, mapLayerInfo);
             } else {
                 throw new IllegalArgumentException("Unknown layer type " + layerType);
             }
