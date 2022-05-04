@@ -72,7 +72,10 @@ public class CachingWebMapService implements MethodInterceptor {
 
         if (cachedTile == null) {
             WebMap dynamicResult = (WebMap) invocation.proceed();
-            checkState(dynamicResult != null);
+            if (dynamicResult == null) {
+                throw new IllegalStateException(
+                        "Internal call from gwc for GetMap returned null." + request.toString());
+            }
             dynamicResult.setResponseHeader("geowebcache-cache-result", MISS.toString());
             dynamicResult.setResponseHeader(
                     "geowebcache-miss-reason", requestMistmatchTarget.toString());
