@@ -8,6 +8,10 @@ target
 *.class
 *.pyc
 
+# Annotation processors
+.apt_generated/
+.apt_generated_tests/
+
 /.metadata/
 
 # Intellij
