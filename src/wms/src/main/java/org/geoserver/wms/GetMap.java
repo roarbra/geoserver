@@ -373,9 +373,13 @@ public class GetMap {
             WMSMapContent mapContent, GetMapRequest request, int i, MapLayerInfo mapLayerInfo)
             throws IOException {
         WMSLayerInfo wmsLayer = (WMSLayerInfo) mapLayerInfo.getResource();
+        if (LOGGER.isLoggable(Level.FINE)) {
+            LOGGER.fine("WMSLayerInfo from catalog is " + wmsLayer);
+        }
         if (!checkWMSLayerMinMaxScale(wmsLayer, mapContent.getScaleDenominator())) return;
         WebMapServer wms = wmsLayer.getStore().getWebMapServer(null);
         Layer gt2Layer = wmsLayer.getWMSLayer(null);
+
         if (wmsLayer.isMetadataBBoxRespected()) {
             boolean isInsideBounnds =
                     checkEnvelopOverLapWithNativeBounds(
@@ -417,11 +421,14 @@ public class GetMap {
                                 + style
                                 + " in cascaded layer "
                                 + wmsLayer.getName()
-                                + ", , re-configure the layer and WMS Store");
+                                + ". Re-configure the layer and WMS Store");
 
             // if the format is not selected then fall back to preffered
             if (!wmsLayer.isFormatValid(imageFormat)) imageFormat = wmsLayer.getPreferredFormat();
 
+            if (LOGGER.isLoggable(Level.FINE)) {
+                LOGGER.fine("gt2Layer sent into WMSLayer :" + gt2Layer);
+            }
             WMSLayer Layer = new WMSLayer(wms, gt2Layer, style, imageFormat);
 
             Layer.setTitle(wmsLayer.prefixedName());

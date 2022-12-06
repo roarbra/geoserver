@@ -15,6 +15,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import javax.annotation.Nullable;
@@ -367,8 +368,6 @@ public class WMSLayerController extends AbstractCatalogController {
         } else {
             resource.setNamespace(catalog.getNamespaceByPrefix(workspaceName));
         }
-        resource.setEnabled(true);
-
         NamespaceInfo foundns = resource.getNamespace();
         if (foundns != null && !foundns.getPrefix().equals(workspaceName)) {
             LOGGER.warning(
@@ -385,17 +384,18 @@ public class WMSLayerController extends AbstractCatalogController {
             resource.setNamespace(ns);
         }
 
-        // fill in missing information
+        // create CatalogBuilder
         CatalogBuilder cb = new CatalogBuilder(catalog);
         cb.setStore(store);
         cb.initWMSLayer(resource);
-
-        resource.setEnabled(true);
-        catalog.validate(resource, true).throwIfInvalid();
+        if (LOGGER.isLoggable(Level.FINE)) {
+            LOGGER.fine("WMSLayerInfo to catalog is " + resource);
+        }
+        // add a ResourceInfo for the wms layer
         catalog.add(resource);
 
-        // create a layer for the feature type
-        catalog.add(new CatalogBuilder(catalog).buildLayer(resource));
+        // add a LayerInfo for the wms layer
+        catalog.add(cb.buildLayer(resource));
 
         return resource.getName();
     }

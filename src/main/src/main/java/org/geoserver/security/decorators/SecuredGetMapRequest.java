@@ -129,11 +129,11 @@ public class SecuredGetMapRequest implements GetMapRequest {
                                         + "have not been implemented yet");
                     }
                 }
+            }
 
-                if (!layersAddedToDelegate) {
-                    // add into the request
-                    delegate.addLayer(layer, styles.get(i));
-                }
+            if (!layersAddedToDelegate) {
+                // add into the request
+                delegate.addLayer(layer, styles.get(i));
             }
         }
 

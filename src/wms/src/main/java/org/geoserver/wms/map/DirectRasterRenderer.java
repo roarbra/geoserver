@@ -598,6 +598,10 @@ class DirectRasterRenderer {
                 mapContent.layers().get(0).getFeatureSource().getFeatures().features().next();
         final GridCoverage2DReader reader =
                 (GridCoverage2DReader) feature.getProperty("grid").getValue();
+
+        if (LOGGER.isLoggable(Level.FINE)) {
+            LOGGER.fine("Read coverage with reader: " + reader);
+        }
         // render via grid coverage renderer, that will apply the advanced projection
         // handling
         final Object params = feature.getProperty("params").getValue();
