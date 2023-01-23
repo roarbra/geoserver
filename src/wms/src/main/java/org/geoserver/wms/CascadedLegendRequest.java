@@ -11,6 +11,7 @@ import java.io.InputStreamReader;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
@@ -103,7 +104,8 @@ public final class CascadedLegendRequest extends LegendRequest {
                 return cascadedRules;
             }
         } catch (Exception e) {
-            throw new org.geoserver.platform.ServiceException("Unable to cascade Legend");
+            LOGGER.log(Level.SEVERE, "Unable to cascade legend.", e);
+            throw new org.geoserver.platform.ServiceException("Unable to cascade Legend.");
         }
     }
 

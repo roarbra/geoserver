@@ -272,11 +272,11 @@ public class GetLegendGraphicKvpReader extends KvpRequestReader {
         if (wmsServer.getCapabilities().getVersion().equalsIgnoreCase("1.3.0")) {
             // WebMapServer under 1.3.0 version does not create GetLegendGraphicRequest
             // since the XML tag <GetLegendGraphic> is not present under the <Capability>
-            // HACK HACK HACK
-            // taking a 1.3.0 GetMap request and forcefully turning it into a GetLegend Request
+            // using capsUrl instead
+            String capsUrl = wmsStoreInfo.getCapabilitiesURL();
             remoteLegendGraphicRequest =
                     new CascadedLegendRequest.GetLegendGraphicRequestV1_3_0(
-                            wmsServer.createGetMapRequest().getFinalURL(), "1.3.0");
+                            new URL(capsUrl), "1.3.0");
         } else {
             // other than 1.3.0
             remoteLegendGraphicRequest = wmsServer.createGetLegendGraphicRequest();
