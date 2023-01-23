@@ -127,6 +127,7 @@ import org.geotools.util.logging.Logging;
 import org.geotools.xsd.XSD;
 import org.jsoup.Jsoup;
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Before;
 import org.locationtech.jts.geom.Coordinate;
 import org.springframework.core.io.DefaultResourceLoader;
@@ -1325,6 +1326,8 @@ public class GeoServerSystemTestSupport extends GeoServerBaseTestSupport<SystemT
                         "expected status <" + statusCode + "> but was <" + status + ">:" + content);
             }
         }
+        String contentType = response.getContentType();
+        Assert.assertEquals("application/json", contentType);
         return json(response);
     }
 
