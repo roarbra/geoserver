@@ -62,6 +62,16 @@
       <artifactId>gt-geojson-core</artifactId>
       <version>${gt.version}</version>
     </dependency>
+    <dependency>
+      <groupId>xalan</groupId>
+      <artifactId>xalan</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>xml-apis</groupId>
+          <artifactId>xml-apis</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
     <!-- end of SVG rendering markers support -->
     <dependency>
       <groupId>com.github.librepdf</groupId>
