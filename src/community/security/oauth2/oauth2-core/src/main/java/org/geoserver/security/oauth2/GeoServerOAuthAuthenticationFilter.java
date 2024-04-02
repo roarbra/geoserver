@@ -444,62 +444,55 @@ public abstract class GeoServerOAuthAuthenticationFilter
                     Level.SEVERE,
                     "Oauth2 OIDC - an error occurred during token validation.  Most likely the token has expired or is invalid/modified.  "
                             + unauthorized.getMessage());
-        } catch (Exception e) {
-            if (e instanceof UserRedirectRequiredException
-                    || e instanceof InsufficientAuthenticationException) {
-                if (filterConfig.getEnableRedirectAuthenticationEntryPoint()
-                        || req.getRequestURI().endsWith(filterConfig.getLoginEndpoint())) {
-                    // Intercepting a "UserRedirectRequiredException" and redirect to the OAuth2
-                    // Provider login URI
-                    if (filterConfig.isAllowUnSecureLogging()) {
-                        LOGGER.log(
-                                Level.FINE,
-                                "OIDC: redirecting to identity provider for user login: "
-                                        + this.filterConfig.buildAuthorizationUrl());
-                        LOGGER.log(
-                                Level.FINE,
-                                "OIDC: When complete, identity provider will redirect to: "
-                                        + this.filterConfig.getRedirectUri());
-                    }
-                    this.aep.commence(req, resp, null);
-                } else {
-                    if (resp.getStatus() != 302) {
-                        // AEP redirection failed
-                        final AccessTokenRequest accessTokenRequest =
-                                restTemplate.getOAuth2ClientContext().getAccessTokenRequest();
-                        if (accessTokenRequest.getPreservedState() != null
-                                && accessTokenRequest.getStateKey() != null) {
-                            accessTokenRequest.remove("state");
-                            accessTokenRequest.remove(accessTokenRequest.getStateKey());
-                            accessTokenRequest.setPreservedState(null);
-                        }
+        } catch (UserRedirectRequiredException | InsufficientAuthenticationException e) {
+            if (filterConfig.getEnableRedirectAuthenticationEntryPoint()
+                    || req.getRequestURI().endsWith(filterConfig.getLoginEndpoint())) {
+                // Intercepting a "UserRedirectRequiredException" and redirect to the OAuth2
+                // Provider login URI
+                if (filterConfig.isAllowUnSecureLogging()) {
+                    LOGGER.log(
+                            Level.FINE,
+                            "OIDC: redirecting to identity provider for user login: "
+                                    + this.filterConfig.buildAuthorizationUrl());
+                    LOGGER.log(
+                            Level.FINE,
+                            "OIDC: When complete, identity provider will redirect to: "
+                                    + this.filterConfig.getRedirectUri());
+                }
+                this.aep.commence(req, resp, null);
+            } else {
+                if (resp.getStatus() != 302) {
+                    // AEP redirection failed
+                    final AccessTokenRequest accessTokenRequest =
+                            restTemplate.getOAuth2ClientContext().getAccessTokenRequest();
+                    if (accessTokenRequest.getPreservedState() != null
+                            && accessTokenRequest.getStateKey() != null) {
+                        accessTokenRequest.remove("state");
+                        accessTokenRequest.remove(accessTokenRequest.getStateKey());
+                        accessTokenRequest.setPreservedState(null);
                     }
                 }
-            } else if (e instanceof BadCredentialsException
-                    || e instanceof ResourceAccessException) {
-                if (e.getCause() instanceof OAuth2AccessDeniedException) {
-                    LOGGER.log(
-                            Level.WARNING,
-                            "Error while trying to authenticate to OAuth2 Provider with the following Exception cause:",
-                            e.getCause());
-                } else if (e instanceof ResourceAccessException) {
-                    LOGGER.log(
-                            Level.SEVERE,
-                            "Could not Authorize OAuth2 Resource due to the following exception:",
-                            e);
-                } else if (e instanceof ResourceAccessException
-                        || e.getCause() instanceof OAuth2AccessDeniedException) {
-                    LOGGER.log(
-                            Level.WARNING,
-                            "It is worth notice that if you try to validate credentials against an SSH protected Endpoint, you need either your server exposed on a secure SSL channel or OAuth2 Provider Certificate to be trusted on your JVM!");
-                    LOGGER.info(
-                            "Please refer to the GeoServer OAuth2 Plugin Documentation in order to find the steps for importing the SSH certificates.");
-                } else {
-                    LOGGER.log(
-                            Level.SEVERE,
-                            "Could not Authorize OAuth2 Resource due to the following exception:",
-                            e.getCause());
-                }
+            }
+        } catch (BadCredentialsException | ResourceAccessException e) {
+            if (e.getCause() instanceof OAuth2AccessDeniedException) {
+                LOGGER.log(
+                        Level.WARNING,
+                        "Error while trying to authenticate to OAuth2 Provider with the following Exception cause:",
+                        e.getCause());
+            } else if (e instanceof ResourceAccessException) {
+                LOGGER.log(
+                        Level.SEVERE,
+                        "Could not Authorize OAuth2 Resource due to the following exception:",
+                        e);
+            } else if (e instanceof ResourceAccessException
+                    || e.getCause() instanceof OAuth2AccessDeniedException) {
+                LOGGER.log(
+                        Level.WARNING,
+                        "It is worth notice that if you try to validate credentials against an SSH protected Endpoint, you need either your server exposed on a secure SSL channel or OAuth2 Provider Certificate to be trusted on your JVM!");
+                LOGGER.info(
+                        "Please refer to the GeoServer OAuth2 Plugin Documentation in order to find the steps for importing the SSH certificates.");
+            } else {
+                LOGGER.log(Level.SEVERE, "Could not Authorize OAuth2 Resource.", e);
             }
         }
 
