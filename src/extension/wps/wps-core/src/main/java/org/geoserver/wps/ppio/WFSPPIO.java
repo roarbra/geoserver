@@ -258,4 +258,14 @@ public class WFSPPIO extends XMLPPIO {
                     org.geoserver.wfs.xml.v1_1_0.WFS.FEATURECOLLECTION);
         }
     }
+
+    public static class WFS20 extends WFSPPIO {
+
+        public WFS20() {
+            super(
+                    new org.geoserver.wfs.xml.v2_0.WFSConfiguration(),
+                    "text/xml",
+                    org.geotools.wfs.v2_0.WFS.FeatureCollection);
+        }
+    }
 }

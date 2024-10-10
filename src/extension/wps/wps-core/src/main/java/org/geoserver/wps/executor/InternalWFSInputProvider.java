@@ -33,20 +33,31 @@ public class InternalWFSInputProvider extends AbstractInputProvider {
 
     @Override
     protected Object getValueInternal(ProgressListener listener) throws Exception {
-        WebFeatureService wfs = (WebFeatureService) context.getBean("wfsServiceTarget");
-        GetFeatureType gft = null;
+        Object gft = null;
         InputReferenceType ref = input.getReference();
+
         if (ref.getMethod() == MethodType.POST_LITERAL) {
-            gft = (GetFeatureType) ref.getBody();
+            gft = ref.getBody();
         } else {
-            GetFeatureKvpRequestReader reader =
-                    (GetFeatureKvpRequestReader) context.getBean("getFeatureKvpReader");
-            gft = (GetFeatureType) kvpParse(ref.getHref(), reader);
+            String version = getVersion(ref.getHref());
+            if ("2.0.0".equals(version)) {
+
+            } else {
+                GetFeatureKvpRequestReader reader =
+                        (GetFeatureKvpRequestReader) context.getBean("getFeatureKvpReader");
+                gft = kvpParse(ref.getHref(), reader);
+            }
         }
 
-        FeatureCollectionResponse featureCollectionType = wfs.getFeature(gft);
-        // this will also deal with axis order issues
-        return ((ComplexPPIO) ppio).decode(featureCollectionType.getAdaptee());
+        if (gft instanceof GetFeatureType) {
+            WebFeatureService wfs = (WebFeatureService) context.getBean("wfsServiceTarget");
+
+            FeatureCollectionResponse featureCollectionType = wfs.getFeature((GetFeatureType) gft);
+            // this will also deal with axis order issues
+            return ((ComplexPPIO) ppio).decode(featureCollectionType.getAdaptee());
+        } else {
+            throw new UnsupportedOperationException("We can't handle the inner WFS request.");
+        }
     }
 
     @Override
